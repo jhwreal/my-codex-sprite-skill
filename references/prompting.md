@@ -1,0 +1,103 @@
+# Prompting and reference roles
+
+## Contents
+
+1. Input roles
+2. Identity contract
+3. Layout selection
+4. Prompt construction
+5. Candidate strategy
+6. Common failure corrections
+
+## 1. Input roles
+
+Label every image when invoking `$imagegen`:
+
+- **Canonical master** — authoritative identity, costume, palette, proportions, facing, and props.
+- **Anchor sheet** — authoritative slot count, character scale, body center, and foot baseline; change poses only.
+- **Layout guide** — construction-only grid and safe margins; never reproduce its lines, labels, colors, or background marks.
+- **Pose guide** — authoritative temporal pose sequence; preserve character identity from the master rather than copying the guide's appearance.
+- **Current action sheet** — edit target during a repair; change only the named slot or defect.
+- **Style reference** — style only; never replace the master character with its subject.
+
+Do not attach redundant or contradictory references. Identity and pose references must have distinct roles.
+
+## 2. Identity contract
+
+Repeat only the invariants that matter:
+
+```text
+Keep exactly the same character as the canonical master: same face, head-to-body ratio,
+hair or fur silhouette, costume construction, palette, markings, materials, handedness,
+weapon dimensions, prop side, camera view, outline treatment, and lighting logic.
+Change only the action pose and the minimal deformation required by motion.
+```
+
+Record detailed invariants once in `character-spec.md`; keep action prompts compact enough that the action remains legible.
+
+## 3. Layout selection
+
+Use one sheet per action, never one independent generation per frame.
+
+| Frames | Default source layout | Notes |
+|---:|---:|---|
+| 1 | 1x1 | Canonical master or a single repair frame |
+| 2 | 2x1 | Short transition |
+| 3 | 3x1 | Short pixel-art strip |
+| 4 | 2x2 | Balanced square layout |
+| 5–6 | 3x2 | Good default for locomotion and attacks |
+| 7–8 | 4x2 | Wider actions and death cycles |
+| 9 | 3x3 | Use only when eight frames are insufficient |
+
+Prefer fewer meaningful frames over many weakly differentiated frames. Deterministically repack the approved grid into the engine's required strip or atlas.
+
+## 4. Prompt construction
+
+The generated `actions/<action>/prompt.md` is the authoritative starting point. Add action-specific beats without redesigning the character.
+
+Use this concise structure:
+
+```text
+Use case: identity-preserve
+Asset type: candidate production action sheet for a 2D game character
+Primary request: edit the references into exactly <N> temporal poses for <action>
+Input images: canonical master; anchor sheet; layout guide; optional pose guide
+Composition: <columns>x<rows> row-major grid; one complete isolated character per used slot
+Action beats: <frame-by-frame timing or named animation phases>
+Constraints: preserve identity contract; shared scale and baseline; complete unclipped body
+Background: perfectly flat solid <key>; no shadows, gradients, texture, or floor
+Avoid: text, labels, visible guide marks, scenery, duplicate characters, detached effects,
+motion blur, afterimages, contact shadows, cropped limbs, overlapping slots, extra props
+```
+
+For pixel art, also require crisp clusters, fixed apparent pixel scale, a restrained palette, nearest-neighbor-compatible edges, and no antialiasing. For painted, sticker, clay, or 3D-rendered sprites, require consistent material and lighting while keeping edges clean enough for chroma removal.
+
+## 5. Candidate strategy
+
+- Hero pilot or signature attack: two candidates by default; use a third after a specific failure diagnosis.
+- Secondary NPC or simple idle: one candidate may be enough after QC.
+- Never ask one image call to produce several distinct candidate sheets.
+- Make one targeted correction per iteration. Preserve all verified invariants.
+- Keep prompt, input roles, selected source, processing report, QC, and preview together under the candidate directory.
+
+## 6. Common failure corrections
+
+### Character gets smaller during wide poses
+
+Remove detached effects and oversized weapon trails. Keep body and effects on separate sheets. Increase slot safety margin only if the body itself is clipped.
+
+### Identity drifts across slots
+
+Strengthen the canonical-master role, use a repeated-character anchor sheet, reduce frame count, simplify the action, or provide a pose guide. Do not generate frames independently.
+
+### Animation is static
+
+Specify distinct temporal beats, weight transfer, contact poses, anticipation, and recovery. Reject a sheet made of near-duplicate poses even if frame count is correct.
+
+### Grid lines appear in output
+
+Restate that the guide is construction-only, attach the clean anchor sheet, and forbid visible borders, labels, guide colors, and frame numbers.
+
+### Chroma edge is dirty
+
+Choose a key farther from the character palette, forbid shadows and translucent effects, rerun soft-matte despill, and inspect on both light and dark backgrounds.

@@ -1,0 +1,4 @@
+interface:
+  display_name: "My Codex Sprite Skill"
+  short_description: "Build and QA consistent 2D character animations"
+  default_prompt: "Use $my-codex-sprite-skill to create and validate a production-ready 2D character animation from my reference art."
