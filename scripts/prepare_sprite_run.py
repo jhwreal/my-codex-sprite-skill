@@ -7,12 +7,19 @@ import argparse
 import datetime as dt
 import math
 import shutil
+import sys
 from pathlib import Path
 from typing import Any
 
 from _sprite_common import (
     Image,
     ImageDraw,
+    durations_ms,
+    has_useful_transparency,
+    sha256_file,
+    validate_action_config,
+    output_pivot,
+    invalidate_selection,
     alpha_bbox,
     color_hex,
     parse_action_spec,
@@ -101,7 +108,7 @@ def draw_dashed_line(
         position += dash + gap
 
 
-def create_layout_guide(path: Path, action: dict[str, Any], key: str, slot_size: int) -> None:
+def create_layout_guide(path: Path, action: dict[str, Any], key: str, slot_size: int, source_pivot: list[float]) -> None:
     columns = int(action["source_layout"]["columns"])
     rows = int(action["source_layout"]["rows"])
     canvas = Image.new("RGBA", (columns * slot_size, rows * slot_size), (*parse_hex_color(key), 255))
@@ -117,7 +124,7 @@ def create_layout_guide(path: Path, action: dict[str, Any], key: str, slot_size:
         draw_dashed_line(draw, (right - inset, top + inset), (right - inset, bottom - inset), line)
         draw_dashed_line(draw, (right - inset, bottom - inset), (left + inset, bottom - inset), line)
         draw_dashed_line(draw, (left + inset, bottom - inset), (left + inset, top + inset), line)
-        foot_y = top + int(slot_size * 0.82)
+        foot_y = top + round(slot_size * source_pivot[1])
         draw_dashed_line(draw, (left + inset, foot_y), (right - inset, foot_y), baseline, dash=6, gap=5)
         label = f"{index + 1}" if index < int(action["frame_count"]) else "unused"
         draw.text((left + inset + 2, top + inset + 2), label, fill=baseline)
@@ -132,10 +139,14 @@ def create_anchor_sheet(
     key: str,
     slot_size: int,
     pixel_art: bool,
+    source_pivot: list[float],
+    transparent: bool,
 ) -> None:
     columns = int(action["source_layout"]["columns"])
     rows = int(action["source_layout"]["rows"])
     canvas = Image.new("RGBA", (columns * slot_size, rows * slot_size), (*parse_hex_color(key), 255))
+    if transparent:
+        canvas = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
     bbox = alpha_bbox(master)
     if bbox is None:
         raise SystemExit("The canonical master contains no visible pixels.")
@@ -147,9 +158,9 @@ def create_anchor_sheet(
     sprite = cropped.resize((width, height), resampling)
     for index in range(int(action["frame_count"])):
         column, row = index % columns, index // columns
-        center_x = column * slot_size + slot_size // 2
-        foot_y = row * slot_size + int(slot_size * 0.82)
-        canvas.alpha_composite(sprite, (center_x - width // 2, foot_y - height))
+        center_x = column * slot_size + round(slot_size * source_pivot[0])
+        foot_y = row * slot_size + round(slot_size * source_pivot[1])
+        canvas.alpha_composite(sprite, (center_x - width // 2, foot_y - (height // 2 if action.get("anchor") == "center" else height)))
     path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(path)
 
@@ -182,6 +193,12 @@ Style notes: {style_notes or 'Fill from the approved project art.'}
 """
 
 
+def background_prompt(run: dict[str, Any]) -> str:
+    if run.get("background_mode", "chroma") == "transparent":
+        return "genuine transparent alpha; no painted checkerboard, floor, shadows, or backdrop"
+    return f"perfectly flat solid {run['chroma_key']}; no shadows, gradients, floor, or lighting variation"
+
+
 def canonical_prompt(run: dict[str, Any]) -> str:
     return f"""Use case: stylized-concept
 Asset type: canonical identity master for future 2D game sprite animation
@@ -189,7 +206,7 @@ Primary request: create one neutral full-body reference for {run['character']['n
 Subject: use character-spec.md and any user reference art as the identity authority
 Style/medium: {run['character']['style_notes'] or 'preserve the approved project style'}
 Composition/framing: one complete centered character, {run['character']['view']} view, generous padding
-Background: perfectly flat solid {run['chroma_key']} chroma key with no floor or lighting variation
+Background: {background_prompt(run)}
 Constraints: readable silhouette, stable proportions, neutral pose, complete limbs and props
 Avoid: text, labels, scenery, cast or contact shadow, glow, motion blur, detached effects, watermark
 """
@@ -203,20 +220,29 @@ def action_prompt(run: dict[str, Any], action: dict[str, Any]) -> str:
     pose_line = (
         "Pose guide: references/pose-guide.png is the temporal-pose authority."
         if action.get("pose_guide")
-        else "Action beats: follow action-design.md or the user-provided frame-by-frame timing."
+        else "Action beats: specify anticipation, contact, follow-through and recovery before generation."
     )
+    frame_timing = durations_ms(action)
+    timing = "\n".join(
+        f"Frame {i + 1}: {action.get('phases', ['unspecified'] * frame_count)[i]}; "
+        f"contact={action.get('contacts', ['unspecified'] * frame_count)[i]}; hold={frame_timing[i]:g}ms"
+        for i in range(frame_count)
+    )
+    source_pivot = run["output"].get("source_pivot", [0.5, 0.82])
     return f"""Use case: identity-preserve
 Asset type: candidate production action sheet for a 2D game character
 Primary request: edit the supplied references into exactly {frame_count} temporal poses for {action['display_name']}; create {loop_phrase}
 Input images:
 - references/canonical-master.png — authoritative character identity
-- references/anchor-sheet.png — authoritative slot scale, body center, and foot baseline; change poses only
-- references/layout-guide.png — construction-only layout; never reproduce its lines, labels, colors, or marks
+- references/anchor-sheet.png — authoritative body scale and neutral root; keep contacts or deliberate displacement from the motion plan
+- references/layout-guide.png — optional construction-only layout; omit if redundant and never reproduce its marks
 {pose_line}
+{timing}
+Spatial contract: fixed square slots; root at normalized {source_pivot}; preserve deliberate motion relative to this root. Do not recenter each pose.
 Composition: exactly {columns}x{rows} slots in row-major temporal order; one complete isolated character in each of the first {frame_count} slots
 Style/medium: {run['character']['style_notes'] or 'preserve the canonical master exactly'}
-Background: perfectly flat solid {run['chroma_key']} with no shadows, gradients, texture, reflections, floor plane, or lighting variation
-Constraints: same face, silhouette family, proportions, outfit, palette, materials, markings, handedness, prop design, view, apparent scale, and baseline as the canonical master; change only pose
+Background: {background_prompt(run)}
+Constraints: same face, silhouette family, proportions, outfit, palette, materials, markings, handedness, prop design, view, apparent body scale as the canonical master; preserve grounded contacts and intentional airborne displacement
 Avoid: text, labels, visible guide marks, scenery, duplicate characters, overlapping slots, cropped limbs, extra props, motion blur, afterimages, detached effects, cast or contact shadows, glow, watermark
 """
 
@@ -228,12 +254,14 @@ def create_action_files(
     pose_guides: dict[str, Path],
     master: Image.Image | None,
 ) -> None:
+    action["anchor"] = run["output"]["anchor"]
+    validate_action_config(action)
     action_dir = run_dir / "actions" / action["id"]
     references = action_dir / "references"
     references.mkdir(parents=True, exist_ok=True)
     (action_dir / "candidates").mkdir(parents=True, exist_ok=True)
     create_layout_guide(
-        references / "layout-guide.png", action, run["chroma_key"], int(run["output"]["source_slot_size"])
+        references / "layout-guide.png", action, run["chroma_key"], int(run["output"]["source_slot_size"]), run["output"].get("source_pivot", [0.5, 0.82])
     )
     pose = pose_guides.get(action["id"])
     if pose:
@@ -251,6 +279,8 @@ def create_action_files(
             run["chroma_key"],
             int(run["output"]["source_slot_size"]),
             bool(run["character"]["pixel_art"]),
+            run["output"].get("source_pivot", [0.5, 0.82]),
+            run.get("background_mode", "chroma") == "transparent",
         )
         action["status"] = "ready"
     else:
@@ -272,10 +302,9 @@ def validate_master(path: Path) -> Image.Image:
     master = Image.open(path).convert("RGBA")
     if alpha_bbox(master) is None:
         raise SystemExit("Canonical master has no visible pixels.")
-    alpha_min, _alpha_max = master.getchannel("A").getextrema()
-    if alpha_min == 255:
+    if not has_useful_transparency(master):
         raise SystemExit(
-            "Canonical master is fully opaque. Remove its background through the installed "
+            "Canonical master lacks a meaningful transparent background. Request real alpha or remove a deliberate matte through the installed "
             "$imagegen chroma-key helper before attaching it."
         )
     return master
@@ -295,16 +324,20 @@ def attach_master(
     if target.exists() and not replace:
         existing_image = Image.open(target).convert("RGBA")
         same_pixels = existing_image.size == master.size and existing_image.tobytes() == master.tobytes()
-        if not same_pixels:
+        recorded_hash = run["character"].get("master_sha256")
+        if not same_pixels or (recorded_hash and recorded_hash != sha256_file(target)):
             raise SystemExit(
                 "A canonical master is already attached. Use --replace-master only after explicit approval; "
                 "all selected actions will be invalidated."
             )
+    if target.exists() and not replace and run["character"].get("master_sha256") == sha256_file(target):
+        return run
     target.parent.mkdir(parents=True, exist_ok=True)
     master.save(target)
     run["chroma_key"] = choose_chroma_key(master, run.get("requested_chroma_key", "auto"))
     run["character"]["master_file"] = "references/canonical-master.png"
     run["character"]["master_approved"] = True
+    run["character"]["master_sha256"] = sha256_file(target)
     run["character"]["master_approved_at"] = utc_now()
     run["status"] = "ready"
     pose_guides: dict[str, Path] = {}
@@ -337,8 +370,12 @@ def create_new_run(args: argparse.Namespace, run_dir: Path) -> dict[str, Any]:
         raise SystemExit("Duplicate action ids are not allowed.")
     master = validate_master(Path(args.master).expanduser().resolve()) if args.master else None
     key = choose_chroma_key(master, args.chroma_key)
+    source_pivot = [0.5, 0.5 if args.anchor == "center" else 0.82]
+    pivot = ([float(v) for v in args.pivot.split(",")] if args.pivot else
+             [args.frame_width / 2, args.frame_height * source_pivot[1]])
     run = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "background_mode": args.background_mode,
         "created_at": utc_now(),
         "updated_at": utc_now(),
         "status": "ready" if master is not None and args.approve_master else "needs-master",
@@ -357,6 +394,9 @@ def create_new_run(args: argparse.Namespace, run_dir: Path) -> dict[str, Any]:
             "frame_width": args.frame_width,
             "frame_height": args.frame_height,
             "anchor": args.anchor,
+            "placement": args.placement,
+            "source_pivot": source_pivot,
+            "pivot": pivot,
             "engine": args.engine,
             "source_slot_size": args.source_slot_size,
             "candidate_count": args.candidates,
@@ -368,6 +408,11 @@ def create_new_run(args: argparse.Namespace, run_dir: Path) -> dict[str, Any]:
         },
         "actions": actions,
     }
+    output_pivot(run)
+    configs = load_action_configs(args.action_config, actions)
+    for action in actions:
+        action.update(configs.get(action["id"], {}))
+        validate_action_config(action)
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "prompts").mkdir(exist_ok=True)
     (run_dir / "references").mkdir(exist_ok=True)
@@ -382,6 +427,22 @@ def create_new_run(args: argparse.Namespace, run_dir: Path) -> dict[str, Any]:
     return run
 
 
+def load_action_configs(values: list[str], actions: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    configs = {}
+    ids = {a["id"] for a in actions}
+    allowed = {"durations_ms", "phases", "contacts", "events", "qc_profile"}
+    for name, path in parse_mapping(values, "--action-config").items():
+        if name not in ids:
+            raise SystemExit(f"Unknown action config target: {name}")
+        config = read_json(path)
+        if set(config) - allowed:
+            raise SystemExit(f"Unknown action config fields: {sorted(set(config) - allowed)}")
+        action = next(a for a in actions if a["id"] == name)
+        validate_action_config({**action, **config})
+        configs[name] = config
+    return configs
+
+
 def update_run(args: argparse.Namespace, run_dir: Path, run: dict[str, Any]) -> dict[str, Any]:
     if not args.update and not args.master:
         raise SystemExit("The run already exists. Use --update to add actions or --master to attach a master.")
@@ -392,12 +453,21 @@ def update_run(args: argparse.Namespace, run_dir: Path, run: dict[str, Any]) -> 
     pose_guides = parse_mapping(args.pose_guide, "--pose-guide")
     if args.update:
         existing = {item["id"] for item in run["actions"]}
-        for raw in args.action:
-            action = parse_action_spec(raw)
+        additions = [parse_action_spec(raw) for raw in args.action]
+        for action in additions:
             if action["id"] in existing:
                 raise SystemExit(f"Action already exists: {action['id']}")
-            run["actions"].append(action)
             existing.add(action["id"])
+        current_actions = [read_json(run_dir / "actions" / a["id"] / "action.json") for a in run["actions"]]
+        configs = load_action_configs(args.action_config, current_actions + additions)
+        for action in current_actions:
+            if action["id"] in configs:
+                action.update(configs[action["id"]])
+                invalidate_selection(run_dir, run, action)
+                write_text(run_dir / "actions" / action["id"] / "prompt.md", action_prompt(run, action))
+        for action in additions:
+            action.update(configs.get(action["id"], {}))
+            run["actions"].append(action)
             create_action_files(run_dir, run, action, pose_guides, master)
         run["updated_at"] = utc_now()
         write_json(run_dir / "run.json", run)
@@ -425,8 +495,14 @@ def main() -> None:
     parser.add_argument("--frame-width", type=int, default=128)
     parser.add_argument("--frame-height", type=int, default=128)
     parser.add_argument("--source-slot-size", type=int, default=256)
-    parser.add_argument("--candidates", type=int, default=2)
+    parser.add_argument("--candidates", type=int, default=1)
     parser.add_argument("--anchor", choices=["bottom-center", "center"], default="bottom-center")
+    parser.add_argument("--background-mode", choices=["transparent", "chroma"], default="transparent",
+                        help="New runs: request native alpha, or deliberately use a flat removable matte.")
+    parser.add_argument("--placement", choices=["fixed", "legacy-fit"], default="fixed",
+                        help="New runs: fixed slot geometry, or legacy per-action crop fitting.")
+    parser.add_argument("--pivot", help="New runs: output root x,y in pixels; default matches source root.")
+    parser.add_argument("--action-config", action="append", default=[], help="action=/path/to/timing-and-motion.json")
     parser.add_argument("--view", default="side")
     parser.add_argument("--style-notes", default="")
     parser.add_argument("--pixel-art", action="store_true")
@@ -449,6 +525,13 @@ def main() -> None:
     run_dir = Path(args.output_dir).expanduser().resolve()
     run_path = run_dir / "run.json"
     if run_path.exists():
+        creation_flags = {"--frame-width", "--frame-height", "--source-slot-size", "--pivot", "--placement",
+                          "--anchor", "--background-mode", "--pixel-art", "--view", "--style-notes",
+                          "--chroma-key", "--candidates", "--engine", "--character-name",
+                          "--body-scale-cv-max", "--anchor-y-std-max", "--edge-margin"}
+        supplied = {token.split("=", 1)[0] for token in sys.argv[1:]}
+        if supplied & creation_flags:
+            raise SystemExit("Geometry/style/default flags apply only to new runs; create a sibling run to change them.")
         run = update_run(args, run_dir, read_json(run_path))
     else:
         run = create_new_run(args, run_dir)

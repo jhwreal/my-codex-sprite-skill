@@ -11,6 +11,12 @@ from typing import Any
 
 from _sprite_common import (
     Image,
+    verify_approval,
+    seal_processing,
+    invalidate_selection,
+    output_pivot,
+    durations_ms,
+    candidate_digest,
     alpha_bbox,
     clear_transparent_rgb,
     image_files,
@@ -68,20 +74,46 @@ def main() -> None:
         raise SystemExit("Source and target actions must have matching FPS and loop semantics.")
 
     source_candidate = run_dir / "actions" / source_id / "candidates" / selected
+    verify_approval(source_candidate, run_dir, run, source_action)
+    if durations_ms(source_action) != durations_ms(target_action):
+        raise SystemExit("Source and target frame durations must match.")
+    source_processing = read_json(source_candidate / "processing.json")
     source_frames = image_files(source_candidate / "frames")
+    if source_id == target_id:
+        raise SystemExit("Mirror target must be a different action.")
     candidate_id = slugify(args.candidate)
     candidate_dir = run_dir / "actions" / target_id / "candidates" / candidate_id
     if candidate_dir.exists() and any(candidate_dir.iterdir()) and not args.force:
         raise SystemExit(f"Target candidate already contains files: {candidate_dir}")
+    if target_action.get("selected_candidate") == candidate_id:
+        invalidate_selection(run_dir, run, target_action)
+    if args.force and candidate_dir.is_dir():
+        for name in ("frames", "qa"):
+            if (candidate_dir / name).is_dir():
+                shutil.rmtree(candidate_dir / name)
+        for name in ("processing.json", "qc.json", "source.png", "transparent-source.png"):
+            (candidate_dir / name).unlink(missing_ok=True)
     frames_dir = candidate_dir / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
 
+    pivot = source_processing.get("pivot", list(output_pivot(run)))
+    clamped_frames = []
     target_frames: list[Image.Image] = []
     source_metrics: list[dict[str, Any]] = []
     output_metrics: list[dict[str, Any]] = []
     for index, source_path in enumerate(source_frames, start=1):
         frame = Image.open(source_path).convert("RGBA")
-        mirrored = clear_transparent_rgb(frame.transpose(Image.Transpose.FLIP_LEFT_RIGHT))
+        flipped = frame.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+        shift = 2 * pivot[0] - frame.width
+        if abs(shift - round(shift)) > 1e-6:
+            raise SystemExit("Lossless mirroring requires a pivot on a pixel or half-pixel boundary.")
+        shift = round(shift)
+        flipped_bbox = alpha_bbox(flipped)
+        if flipped_bbox and (flipped_bbox[0] + shift < 0 or flipped_bbox[2] + shift > frame.width):
+            clamped_frames.append(index)
+        mirrored = Image.new("RGBA", frame.size, (0, 0, 0, 0))
+        mirrored.alpha_composite(flipped, (shift, 0))
+        mirrored = clear_transparent_rgb(mirrored)
         output = frames_dir / f"{index:04d}.png"
         mirrored.save(output)
         bbox = alpha_bbox(mirrored)
@@ -136,14 +168,20 @@ def main() -> None:
             "frame_count": len(target_frames),
             "target_frame_size": {"width": frame_width, "height": frame_height},
             "anchor": target_action.get("anchor", "bottom-center"),
-            "padding": None,
+            "padding": source_processing.get("padding"),
+            "placement_mode": source_processing.get("placement_mode", "legacy-fit"),
+            "pivot": pivot,
+            "source_candidate_digest": candidate_digest(source_candidate, run_dir, run, source_action),
+            "source_edge_frames": [],
+            "unused_content_slots": [],
             "shared_scale": 1.0,
             "resampling": "none",
-            "paste_clamped_frames": [],
+            "paste_clamped_frames": clamped_frames,
             "source_frames": source_metrics,
             "output_frames": output_metrics,
         },
     )
+    seal_processing(candidate_dir, run_dir, run, target_action)
     print(f"candidate_dir={candidate_dir}")
     print(f"source={source_id}:{selected}")
     print("temporal_order_preserved=true")

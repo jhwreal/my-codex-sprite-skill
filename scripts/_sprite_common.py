@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import re
 from pathlib import Path
@@ -47,7 +48,7 @@ def natural_key(path: Path) -> list[int | str]:
 
 def image_files(path: Path) -> list[Path]:
     return sorted(
-        [item for item in path.iterdir() if item.suffix.lower() in IMAGE_SUFFIXES],
+        [item for item in path.iterdir() if item.is_file() and item.suffix.lower() in IMAGE_SUFFIXES],
         key=natural_key,
     )
 
@@ -116,7 +117,7 @@ def parse_action_spec(raw: str) -> dict[str, Any]:
     fps = float(parts[2])
     if frame_count < 1 or frame_count > 32:
         raise ValueError("Action frame count must be between 1 and 32.")
-    if fps <= 0 or fps > 120:
+    if not math.isfinite(fps) or fps <= 0 or fps > 120:
         raise ValueError("Action FPS must be greater than 0 and no more than 120.")
     loop_token = parts[3].lower()
     if loop_token not in {"loop", "once"}:
@@ -212,3 +213,172 @@ def composite_on(image: Image.Image, background: tuple[int, int, int, int]) -> I
 def mean(values: Iterable[float]) -> float:
     items = list(values)
     return sum(items) / len(items) if items else 0.0
+
+
+# Versioned, local evidence. Never include credentials or provider responses.
+PIPELINE_VERSION = 2
+ACTION_FIELDS = ("id", "frame_count", "fps", "loop", "source_layout", "anchor",
+                 "durations_ms", "phases", "contacts", "events", "qc_profile")
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def digest_json(value: Any) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, allow_nan=False).encode()).hexdigest()
+
+
+def durations_ms(action: dict[str, Any]) -> list[float]:
+    count = int(action["frame_count"])
+    fps = float(action["fps"])
+    if not math.isfinite(fps) or not 0 < fps <= 120:
+        raise SystemExit("FPS must be finite and in (0, 120].")
+    values = action.get("durations_ms", [1000 / fps] * count)
+    if not isinstance(values, list) or len(values) != count:
+        raise SystemExit("durations_ms must contain exactly one duration per frame.")
+    if any(isinstance(v, bool) or not isinstance(v, (int, float))
+           or not math.isfinite(v) or v <= 0 for v in values):
+        raise SystemExit("Frame durations must be positive finite milliseconds.")
+    return [float(v) for v in values]
+
+
+def validate_action_config(action: dict[str, Any]) -> None:
+    durations_ms(action)
+    count = int(action["frame_count"])
+    layout = action["source_layout"]
+    if (type(layout.get("columns")) is not int or type(layout.get("rows")) is not int
+            or layout["columns"] < 1 or layout["rows"] < 1 or layout["columns"] * layout["rows"] < count
+            or not 1 <= count <= 32):
+        raise SystemExit("Action needs a positive grid with enough slots for 1-32 frames.")
+    if action.get("qc_profile", "grounded") not in {"grounded", "aerial", "deforming"}:
+        raise SystemExit("qc_profile must be grounded, aerial, or deforming.")
+    for key in ("phases", "contacts"):
+        if key in action and (not isinstance(action[key], list) or len(action[key]) != count
+                              or any(not isinstance(v, str) or not v.strip() for v in action[key])):
+            raise SystemExit(f"{key} must contain one non-empty string per frame.")
+    events = action.get("events", [])
+    if not isinstance(events, list):
+        raise SystemExit("events must be a list.")
+    for event in events:
+        if (not isinstance(event, dict) or set(event) != {"frame", "name"}
+                or type(event["frame"]) is not int or not 1 <= event["frame"] <= count
+                or not isinstance(event["name"], str) or not event["name"].strip()):
+            raise SystemExit("Each event needs a 1-based frame and a non-empty name.")
+
+
+def output_pivot(run: dict[str, Any]) -> tuple[float, float]:
+    output = run["output"]
+    w, h = int(output["frame_width"]), int(output["frame_height"])
+    default_y = h / 2 if output.get("anchor") == "center" else h
+    pivot = output.get("pivot", [w / 2, default_y])
+    if (not isinstance(pivot, list) or len(pivot) != 2
+            or any(not isinstance(v, (int, float)) or not math.isfinite(v) for v in pivot)
+            or not 0 <= pivot[0] <= w or not 0 <= pivot[1] <= h):
+        raise SystemExit("Output pivot must be finite x,y coordinates inside the frame.")
+    return float(pivot[0]), float(pivot[1])
+
+
+def has_useful_transparency(image: Image.Image) -> bool:
+    # A single transparent pixel or translucent opaque backdrop is not a cutout.
+    alpha = image.convert("RGBA").getchannel("A")
+    histogram = alpha.histogram()
+    return sum(histogram[:9]) >= max(1, math.ceil(image.width * image.height * 0.01)) and sum(histogram[9:]) > 0
+
+
+def input_fingerprint(run_dir: Path, run: dict[str, Any], action: dict[str, Any]) -> str:
+    validate_action_config(action)
+    output_pivot(run)
+    placement = run["output"].get("placement", "legacy-fit")
+    if placement not in {"fixed", "legacy-fit"}:
+        raise SystemExit("Placement must be fixed or legacy-fit.")
+    root = run["output"].get("source_pivot", [0.5, 0.82])
+    if (not isinstance(root, list) or len(root) != 2
+            or any(not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v <= 1 for v in root)):
+        raise SystemExit("Source pivot must contain two finite normalized coordinates in [0, 1].")
+    master_file = run["character"].get("master_file")
+    if not master_file or not run["character"].get("master_approved"):
+        raise SystemExit("An approved canonical master is required.")
+    master_hash = sha256_file(run_dir / master_file)
+    expected = run["character"].get("master_sha256")
+    if expected and expected != master_hash:
+        raise SystemExit("Canonical master changed; attach and approve its replacement first.")
+    action_dir = run_dir / "actions" / action["id"]
+    refs = {}
+    for path in sorted((action_dir / "references").glob("*.png")):
+        refs[path.name] = sha256_file(path)
+    for path in (action_dir / "prompt.md", run_dir / "character-spec.md"):
+        if path.is_file():
+            refs[str(path.relative_to(run_dir))] = sha256_file(path)
+    return digest_json({"version": PIPELINE_VERSION, "master": master_hash,
+                        "output": run["output"], "pixel_art": run["character"].get("pixel_art"),
+                        "qc": run.get("qc", {}), "chroma_key": run.get("chroma_key"),
+                        "background": run.get("background_mode", "chroma"),
+                        "action": {k: action[k] for k in ACTION_FIELDS if k in action}, "refs": refs})
+
+
+def artifact_hashes(candidate_dir: Path) -> dict[str, str]:
+    paths = image_files(candidate_dir / "frames")
+    for name in ("source.png", "transparent-source.png", "sheet.png", "prompt-used.md", "derivation-note.md"):
+        if (candidate_dir / name).is_file():
+            paths.append(candidate_dir / name)
+    return {str(p.relative_to(candidate_dir)): sha256_file(p) for p in paths}
+
+
+def seal_processing(candidate_dir: Path, run_dir: Path, run: dict[str, Any], action: dict[str, Any]) -> None:
+    path = candidate_dir / "processing.json"
+    processing = read_json(path)
+    processing["schema_version"] = PIPELINE_VERSION
+    processing["input_fingerprint"] = input_fingerprint(run_dir, run, action)
+    processing["artifact_hashes"] = artifact_hashes(candidate_dir)
+    write_json(path, processing)
+
+
+def candidate_digest(candidate_dir: Path, run_dir: Path, run: dict[str, Any], action: dict[str, Any]) -> str:
+    processing = read_json(candidate_dir / "processing.json")
+    if processing.get("input_fingerprint") != input_fingerprint(run_dir, run, action):
+        raise SystemExit("Candidate inputs changed or legacy evidence is unsigned; reprocess this candidate.")
+    artifacts = artifact_hashes(candidate_dir)
+    if processing.get("artifact_hashes") != artifacts:
+        raise SystemExit("Candidate artifacts changed; reprocess before QC, review, or packaging.")
+    if len(image_files(candidate_dir / "frames")) != int(action["frame_count"]):
+        raise SystemExit("Candidate frame count does not match the action.")
+    return digest_json({"processing": sha256_file(candidate_dir / "processing.json"), "artifacts": artifacts})
+
+
+def review_evidence(candidate_dir: Path, run_dir: Path, run: dict[str, Any], action: dict[str, Any]) -> dict[str, str]:
+    current = candidate_digest(candidate_dir, run_dir, run, action)
+    qc = read_json(candidate_dir / "qc.json")
+    if qc.get("candidate_digest") != current or qc.get("status") not in {"pass", "review"}:
+        raise SystemExit("QC is failing or stale; run QC again.")
+    preview = read_json(candidate_dir / "qa" / "preview.json")
+    if preview.get("candidate_digest") != current:
+        raise SystemExit("Preview is stale; render and inspect it again.")
+    for name in ("contact-sheet.png", "preview.gif"):
+        if preview.get("hashes", {}).get(name) != sha256_file(candidate_dir / "qa" / name):
+            raise SystemExit("Preview artifacts changed; render and inspect them again.")
+    return {"candidate_digest": current, "qc_sha256": sha256_file(candidate_dir / "qc.json"),
+            "preview_sha256": sha256_file(candidate_dir / "qa" / "preview.json")}
+
+
+def verify_approval(candidate_dir: Path, run_dir: Path, run: dict[str, Any], action: dict[str, Any]) -> None:
+    evidence = review_evidence(candidate_dir, run_dir, run, action)
+    approval = action.get("visual_review", {})
+    if (action.get("status") != "approved" or action.get("selected_candidate") != candidate_dir.name
+            or approval.get("evidence") != evidence):
+        raise SystemExit("Approval is missing or stale; inspect and select this exact candidate again.")
+
+
+def invalidate_selection(run_dir: Path, run: dict[str, Any], action: dict[str, Any]) -> None:
+    action.pop("selected_candidate", None)
+    action.pop("visual_review", None)
+    action["status"] = "ready"
+    write_json(run_dir / "actions" / action["id"] / "action.json", action)
+    for index, summary in enumerate(run["actions"]):
+        if summary["id"] == action["id"]:
+            run["actions"][index] = dict(action)
+    write_json(run_dir / "run.json", run)

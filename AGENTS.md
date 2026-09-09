@@ -35,6 +35,9 @@ Validate at minimum with:
 2. Python bytecode compilation for every bundled script.
 3. `--help` smoke checks for all CLI scripts.
 4. A temporary pilot-run smoke test when `prepare_sprite_run.py` or shared run creation changes.
-5. A scan for stale Skill names, absolute paths, secrets, caches, and generated media.
+5. `python -m unittest discover -s tests -v` for procedural pipeline regression tests.
+6. A scan for stale Skill names, absolute paths, secrets, caches, and generated media.
 
 Install only after source validation passes. Exclude `.git`, caches, virtual environments, tests, and local outputs from the Codex installation copy, then compare the installed files with the source files that are meant to ship.
+
+New runs use fixed source-canvas geometry and native-alpha requests. Preserve schema-1 placement behavior explicitly; never reuse unsigned/stale approval. Increment `PIPELINE_VERSION` when later processing or evidence-contract changes make prior results incompatible. Keep model routing in the installed imagegen skill and task settings, not in deterministic scripts.

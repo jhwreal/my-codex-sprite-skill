@@ -10,6 +10,9 @@ from typing import Any
 
 from _sprite_common import (
     Image,
+    verify_approval,
+    durations_ms,
+    output_pivot,
     clear_transparent_rgb,
     image_files,
     read_json,
@@ -41,8 +44,10 @@ def godot_resource(
                     ]
                 )
             )
+            relative_duration = frame["duration_ms"] * float(animation["fps"]) / 1000
             frame_entries.append(
-                '{"duration": 1.0, "texture": SubResource("' + resource_id + '")}')
+                '{"duration": ' + str(relative_duration)
+                + ', "texture": SubResource("' + resource_id + '")}')
         animation_entries.append(
             "{\n"
             + f'"frames": [{", ".join(frame_entries)}],\n'
@@ -54,7 +59,7 @@ def godot_resource(
     header = [
         f'[gd_resource type="SpriteFrames" load_steps={resource_index + 1} format=3]',
         "",
-        f'[ext_resource type="Texture2D" path="{atlas_resource_path}" id="1_atlas"]',
+        f'[ext_resource type="Texture2D" path={json.dumps(atlas_resource_path)} id="1_atlas"]',
         "",
     ]
     body = "\n\n".join(subresources)
@@ -80,7 +85,9 @@ def main() -> None:
         candidate = action.get("selected_candidate")
         if not candidate or action.get("status") != "approved":
             raise SystemExit(f"Action is not visually approved: {action_id}")
-        frames = image_files(action_dir / "candidates" / candidate / "frames")
+        candidate_dir = action_dir / "candidates" / candidate
+        verify_approval(candidate_dir, run_dir, run, action)
+        frames = image_files(candidate_dir / "frames")
         if len(frames) != int(action["frame_count"]):
             raise SystemExit(f"Action {action_id} has {len(frames)} frames; expected {action['frame_count']}.")
         selected.append((action, action_summary, frames))
@@ -96,7 +103,11 @@ def main() -> None:
     frame_records: dict[str, Any] = {}
     for row, (action, _summary, frame_paths) in enumerate(selected):
         animation_frames: list[dict[str, Any]] = []
-        duration_ms = max(1, int(round(1000 / float(action["fps"]))))
+        timing = durations_ms(action)
+        candidate_dir = run_dir / "actions" / action["id"] / "candidates" / action["selected_candidate"]
+        processing = read_json(candidate_dir / "processing.json")
+        pivot = processing.get("pivot", list(output_pivot(run)))
+        events = [{**event, "time_ms": sum(timing[:event["frame"] - 1])} for event in action.get("events", [])]
         for column, frame_path in enumerate(frame_paths):
             frame = Image.open(frame_path).convert("RGBA")
             if frame.size != (frame_width, frame_height):
@@ -109,7 +120,13 @@ def main() -> None:
                 "w": frame_width,
                 "h": frame_height,
             }
-            record = {"frame": rectangle, "duration_ms": duration_ms, "anchor": {"x": 0.5, "y": 1.0}}
+            record = {"frame": rectangle, "duration_ms": timing[column],
+                      "pivot": {"x": pivot[0], "y": pivot[1]},
+                      "anchor": {"x": pivot[0] / frame_width, "y": pivot[1] / frame_height}}
+            if action.get("phases"):
+                record["phase"] = action["phases"][column]
+            if action.get("contacts"):
+                record["contact"] = action["contacts"][column]
             frame_records[key] = record
             animation_frames.append(record)
         animations.append(
@@ -119,6 +136,9 @@ def main() -> None:
                 "fps": float(action["fps"]),
                 "loop": bool(action["loop"]),
                 "selected_candidate": action["selected_candidate"],
+                "pivot": {"x": pivot[0], "y": pivot[1]},
+                "godot_offset": {"x": frame_width / 2 - pivot[0], "y": frame_height / 2 - pivot[1]},
+                "events": events,
                 "visual_review": action.get("visual_review", {}),
                 "frames": animation_frames,
             }
@@ -132,13 +152,18 @@ def main() -> None:
     for path in (atlas_path, json_path, validation_path):
         if path.exists() and not args.force:
             raise SystemExit(f"Refusing to overwrite {path}; pass --force after confirming replacement.")
+    if args.godot_resource_path:
+        if not args.godot_resource_path.startswith("res://"):
+            raise SystemExit("--godot-resource-path must start with res://")
+        if (output_dir / "sprite_frames.tres").exists() and not args.force:
+            raise SystemExit("Refusing to overwrite sprite_frames.tres; pass --force for intentional replacement.")
     atlas.save(atlas_path)
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "image": atlas_path.name,
         "size": {"width": atlas.width, "height": atlas.height},
         "grid": {"columns": columns, "rows": rows, "cell_width": frame_width, "cell_height": frame_height},
-        "anchor": "bottom-center",
+        "anchor": "per-frame-normalized; origin top-left",
         "frames": frame_records,
         "animations": animations,
     }

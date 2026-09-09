@@ -7,7 +7,8 @@ import argparse
 import math
 from pathlib import Path
 
-from _sprite_common import Image, ImageDraw, checkerboard, image_files, read_json, slugify
+from _sprite_common import (Image, ImageDraw, checkerboard, image_files, read_json, slugify,
+                            durations_ms, candidate_digest, write_json, sha256_file)
 
 
 def background_for(kind: str, size: tuple[int, int]) -> Image.Image:
@@ -32,6 +33,8 @@ def main() -> None:
     action_dir = run_dir / "actions" / action_id
     action = read_json(action_dir / "action.json")
     candidate_dir = action_dir / "candidates" / candidate_id
+    run = read_json(run_dir / "run.json")
+    current_digest = candidate_digest(candidate_dir, run_dir, run, action)
     frames = image_files(candidate_dir / "frames")
     if not frames:
         raise SystemExit("No normalized frames were found. Run process_action_sheet.py first.")
@@ -76,16 +79,23 @@ def main() -> None:
         canvas = checkerboard((width, height), max(4, min(width, height) // 8))
         canvas.alpha_composite(image, ((width - image.width) // 2, (height - image.height) // 2))
         gif_frames.append(canvas.convert("P", palette=Image.Palette.ADAPTIVE))
-    duration = max(1, int(round(1000 / float(action["fps"]))))
+    timing = durations_ms(action)
+    gif_timing = [max(10, round(value / 10) * 10) for value in timing]
     gif_path = qa_dir / "preview.gif"
     gif_frames[0].save(
         gif_path,
         save_all=True,
         append_images=gif_frames[1:],
-        duration=[duration] * len(gif_frames),
-        loop=0 if action.get("loop") else 1,
+        duration=gif_timing,
+        **({"loop": 0} if action.get("loop") else {}),
         disposal=2,
     )
+    write_json(qa_dir / "preview.json", {
+        "candidate_digest": current_digest,
+        "durations_ms": timing, "gif_durations_ms": gif_timing,
+        "timing_note": "GIF durations are rounded to 10ms; atlas timing remains exact.",
+        "hashes": {"contact-sheet.png": sha256_file(contact_path), "preview.gif": sha256_file(gif_path)},
+    })
     print(f"contact_sheet={contact_path}")
     print(f"preview={gif_path}")
 

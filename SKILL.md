@@ -13,10 +13,10 @@ Do not promise that an AI-generated sheet is shippable merely because it was spl
 
 ## Non-negotiable rules
 
-1. Load and follow the installed `$imagegen` skill before any visual generation or edit. Use its built-in-first path and approval rules. Do not call an image API or ad-hoc image CLI directly.
+1. Load and follow the installed `$imagegen` skill before any visual generation or edit. Use its built-in-first path and current tool schema. Do not call an image API or ad-hoc image CLI directly.
 2. Establish one approved transparent canonical master before generating actions. Treat its silhouette, face, proportions, palette, outfit, materials, handedness, markings, and props as invariants.
 3. Generate one complete action sheet per image request. Do not generate isolated frames unless repairing one bad frame after the action sheet has otherwise passed.
-4. Attach the canonical master and matching anchor sheet to every action request. Attach a pose guide whenever timing or anatomy matters.
+4. Attach the canonical master and matching anchor sheet to each action request. Add a pose guide when temporal beats or anatomy need it; include a layout guide only when it resolves layout ambiguity.
 5. Keep character-body animation separate from sword arcs, projectiles, dust, smoke, hit flashes, and other effects unless the effect is physically attached and intentionally part of the silhouette.
 6. Let scripts own exact grid slicing, transparency cleanup, shared scaling, anchors, atlas geometry, metadata, and previews. Never rely on generated pixels for exact engine geometry.
 7. Start with one pilot action for a new hero. Do not expand the full action set until the pilot passes identity, motion, loop, transparency, and in-engine checks.
@@ -76,7 +76,9 @@ The run starts in `needs-master` state unless an already approved transparent ma
 
 ### 3. Establish and approve the canonical master
 
-Reuse approved project art when possible. Otherwise use `$imagegen` to create one full-body neutral reference on a flat removable chroma-key background. Use the key chosen in `run.json`, remove it with the installed imagegen helper, inspect on light, dark, and checker backgrounds, then obtain explicit approval before attaching it.
+Reuse approved project art when possible. Otherwise request one full-body neutral reference with genuine transparent alpha through built-in `$imagegen`. Inspect it on light, dark, and checker backgrounds before attaching it. An existing user decision accepting this exact master is sufficient approval; do not ask again.
+
+If a deliberate matte is needed, create the run with `--background-mode chroma`, use its key color and the installed imagegen removal helper. Do not treat CLI model limitations as limitations of the built-in tool, and do not silently change providers or models.
 
 ```bash
 python "$SKILL_DIR/scripts/prepare_sprite_run.py" \
@@ -89,11 +91,11 @@ Update `character-spec.md` with the actual identity invariants. If the master ch
 
 ### 4. Generate action candidates with `$imagegen`
 
-Read `actions/<action>/prompt.md`. Load the canonical master, anchor sheet, layout guide, and optional pose guide so they are visible to the built-in edit flow. Label each image's role explicitly.
+Read `actions/<action>/prompt.md`. Inspect local references before editing and attach them using the actual tool schema. Label identity, spatial, and pose references separately. Use `--action-config` to record per-frame phases, contacts, timing, and events when they matter; see `references/workflow.md`.
 
-Generate candidates in separate calls. Default to two candidates for a hero action and one for low-risk secondary characters; use three when the action is critical or earlier candidates fail. Save each selected raw output into the project run. Do not accept the first output automatically.
+Start with one candidate per action and inspect it. Generate a second only for a diagnosed failure or a requested comparison. Default to at most two generation attempts per action; after repeated failure, report the concrete defect and revise the action plan before spending more. A requested candidate comparison or retry budget takes precedence. Save source images and the actual issued prompt in the run.
 
-For simple opaque characters, use the flat chroma-key workflow from `$imagegen`. Ask before switching to true native transparency or another model/path, exactly as `$imagegen` requires.
+New runs request true transparency. Validate the actual alpha channel; a painted checkerboard is not transparency. `--remove-chroma` is an explicit processing fallback for a deliberately generated flat matte. Ordinary opaque or partially transparent backgrounds must be repaired or regenerated, not silently keyed.
 
 ### 5. Process one candidate deterministically
 
@@ -105,7 +107,9 @@ python "$SKILL_DIR/scripts/process_action_sheet.py" \
   --candidate candidate-01
 ```
 
-The processor removes the key through the installed imagegen helper when needed, slices the declared source grid, applies one shared scale to all frames, aligns one shared anchor, clears hidden RGB under fully transparent pixels, and writes normalized frames plus a horizontal transparent sheet.
+New runs use `fixed` placement: equally sized square source slots map through one uniform scale and root translation to the target canvas. No per-pose bounding-box crop or recentering occurs. The same normalized source canvas maps to the same character scale across actions. Generation must still respect the anchor-sheet body scale. Source clipping and content in unused slots are checked before normalization.
+
+The output root defaults to `(width × 0.5, height × 0.82)` for grounded sprites; `--pivot x,y` sets a custom root when creating a run. `--anchor center` uses a centered source and output root. Freeze geometry before generating actions. See `references/workflow.md` for legacy runs and exact timing.
 
 Never rescale each frame independently to fill its cell. That hides source instability and creates motion popping.
 
@@ -125,7 +129,7 @@ python "$SKILL_DIR/scripts/render_action_preview.py" \
   --candidate candidate-01
 ```
 
-Inspect `qc.json`, `qa/contact-sheet.png`, and `qa/preview.gif`. A script result cannot judge identity, anatomy, weight, appeal, or action semantics. Apply the full rubric in `references/qa-rubric.md`.
+Inspect `qc.json`, `qa/contact-sheet.png`, and `qa/preview.gif`. A script result cannot judge identity, anatomy, weight, appeal, or action semantics. Review every frame against the master; report frame number, observed defect, and smallest repair. Inspect loop seams and playback at target size. Apply `references/qa-rubric.md`; bounding-box changes are review heuristics, not proof that the character changed scale.
 
 ### 7. Select only a visually approved candidate
 
@@ -140,7 +144,7 @@ python "$SKILL_DIR/scripts/select_candidate.py" \
   --note "Identity, gait, loop, baseline, and edges verified."
 ```
 
-Add `--accept-qc-review` only after inspecting and justifying every warning.
+Add `--accept-qc-review` only after inspecting and justifying every warning. Selection binds the current inputs, frame hashes, QC, and preview. Reprocessing, changing timings, editing the master, or altering reviewed files requires fresh evidence and review; packaging rejects stale approval.
 
 ### 8. Expand actions incrementally
 
@@ -185,7 +189,7 @@ python "$SKILL_DIR/scripts/pack_atlas.py" \
   --godot-resource-path 'res://art/hero/atlas.png'
 ```
 
-Inspect the final atlas, manifest, and in-engine playback before declaring completion.
+Inspect the final atlas, manifest, and in-engine playback before declaring completion. Apply exported pivot/offset metadata in the engine; a Godot `SpriteFrames` resource does not set node position or dispatch gameplay events.
 
 ## Repair decision tree
 
@@ -208,3 +212,12 @@ Accept an action only when all are true:
 - effects are intentionally layered; no detached noise, shadows, guide marks, labels, or scenery;
 - contact sheet and animated preview are inspected visually;
 - selected action is verified in the target engine before full-set expansion.
+
+
+## Model upgrades and autonomy
+
+The task's reasoning model plans and inspects; imagegen supplies pixels. Do not hardcode Astra or an image model into these deterministic scripts, and do not claim a hidden built-in backend model was verified. Use the selected task model and current imagegen contract. `references/prompting.md` records Image 2-specific guidance for an explicitly chosen CLI path.
+
+For Astra, preserve the user's accepted decisions across steps. Complete authorized processing, targeted repair, QC, previews, and packaging without repeated permission questions. Resolve routine layout and file choices from the project. Ask only for an unresolved identity/art-direction choice, an exhausted generation budget, or authorization for a different external generation path. Do not confuse programmatic `pass` with visual or in-engine acceptance.
+
+Model upgrades do not prove higher sprite acceptance rates. Compare a run loop, a weapon attack, and jump/landing with one fixed master and action specification; record pass/retry results, elapsed time and reported usage. Never invent unavailable model IDs, costs, engine tests, or quality improvements. Keep paid model comparisons explicit; deterministic regression tests need no image API.

@@ -7,7 +7,7 @@ import argparse
 import datetime as dt
 from pathlib import Path
 
-from _sprite_common import read_json, slugify, write_json
+from _sprite_common import read_json, slugify, write_json, review_evidence
 
 
 def utc_now() -> str:
@@ -46,7 +46,10 @@ def main() -> None:
     if qc.get("status") == "review" and not args.accept_qc_review:
         raise SystemExit("QC warnings require --accept-qc-review plus a note that justifies them.")
     action = read_json(action_path)
+    run = read_json(run_dir / "run.json")
+    evidence = review_evidence(candidate_dir, run_dir, run, action)
     approval = {
+        "evidence": evidence,
         "candidate": candidate_id,
         "approved_at": utc_now(),
         "qc_status": qc.get("status"),

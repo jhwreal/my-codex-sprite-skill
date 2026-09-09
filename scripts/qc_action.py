@@ -11,6 +11,7 @@ from typing import Any
 
 from _sprite_common import (
     Image,
+    candidate_digest,
     alpha_difference_ratio,
     edge_alpha_count,
     image_files,
@@ -47,6 +48,7 @@ def main() -> None:
     action_dir = run_dir / "actions" / action_id
     action = read_json(action_dir / "action.json")
     candidate_dir = action_dir / "candidates" / candidate_id
+    current_digest = candidate_digest(candidate_dir, run_dir, run, action)
     processing = read_json(candidate_dir / "processing.json")
     frames = image_files(candidate_dir / "frames")
     if not frames:
@@ -92,6 +94,13 @@ def main() -> None:
 
     errors: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
+    profile = action.get("qc_profile", "grounded")
+    if processing.get("source_edge_frames"):
+        errors.append({"code": "source-slot-clipping", "frames": processing["source_edge_frames"]})
+    if processing.get("unused_content_slots"):
+        errors.append({"code": "content-in-unused-slots", "slots": processing["unused_content_slots"]})
+    if processing.get("placement_mode", "legacy-fit") == "legacy-fit":
+        warnings.append({"code": "legacy-action-fit", "message": "Per-action fitting does not preserve cross-action scale or source displacement."})
     if len(frames) != expected:
         errors.append({"code": "frame-count", "message": f"Expected {expected} frames; found {len(frames)}."})
     if empty_frames:
@@ -102,22 +111,21 @@ def main() -> None:
         errors.append({"code": "paste-clamped", "frames": clamped_frames})
     if residue_total:
         errors.append({"code": "transparent-rgb-residue", "pixels": residue_total})
-    if body_scale_cv > max(0.20, body_scale_limit * 2):
-        errors.append({"code": "severe-body-scale-drift", "value": body_scale_cv})
-    elif body_scale_cv > body_scale_limit:
-        warnings.append({"code": "body-scale-drift", "value": body_scale_cv, "limit": body_scale_limit})
-    if anchor_y_std > max(0.12, anchor_limit * 2):
-        errors.append({"code": "severe-anchor-y-drift", "value": anchor_y_std})
-    elif anchor_y_std > anchor_limit:
-        warnings.append({"code": "anchor-y-drift", "value": anchor_y_std, "limit": anchor_limit})
+    # Bounding boxes include weapons and pose deformation, so they cannot prove body-scale drift.
+    if profile != "deforming" and body_scale_cv > body_scale_limit:
+        warnings.append({"code": "silhouette-extent-change", "value": body_scale_cv, "limit": body_scale_limit})
+    if profile == "grounded" and anchor_y_std > anchor_limit:
+        warnings.append({"code": "ground-contact-review", "value": anchor_y_std, "limit": anchor_limit})
     if len(images) > 1 and motion_score <= 0.005:
         warnings.append({"code": "near-static-animation", "value": motion_score})
-    if center_x_std > 0.12:
+    if profile == "grounded" and center_x_std > 0.12:
         warnings.append({"code": "source-center-x-drift", "value": center_x_std})
 
     status = "fail" if errors else "review" if warnings else "pass"
     result = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "candidate_digest": current_digest,
+        "qc_profile": profile,
         "status": status,
         "action": action_id,
         "candidate": candidate_id,

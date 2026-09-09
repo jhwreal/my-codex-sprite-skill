@@ -20,13 +20,21 @@ The scripts report deterministic facts and heuristics. Treat hard errors as bloc
 | `edge_touch_frames` | 0 | Normalized content keeps safety padding |
 | `paste_clamped_frames` | 0 | Shared-scale placement did not overflow |
 | `transparent_rgb_residue_pixels` | 0 | Fully transparent pixels have zero RGB |
-| `body_scale_cv` | ≤ 0.10 | Source silhouette extent is reasonably stable |
-| `normalized_anchor_y_std` | ≤ 0.05 | Source feet/baseline do not wander excessively |
-| `motion_score` | > 0.005 | Frames are not effectively identical |
+| `body_scale_cv` | review above 0.10 | Historical metric name: bbox extent including props, not measured body scale |
+| `normalized_anchor_y_std` | review above 0.05 for grounded actions | Bbox bottom movement; cannot establish actual foot contact |
+| `motion_score` | review at ≤ 0.005 | Alpha silhouette motion only; internal RGB changes require visual review |
+| source-slot clipping | 0 | Raw slot content must not touch the source boundary |
+| content in unused slots | 0 | Trailing grid slots must be empty |
 
-For a strict hero pilot, tighten `body_scale_cv` to `0.08`. Large pose changes can create a scale warning even when the art is valid; document that judgment rather than suppressing the metric.
+Use `qc_profile` in the action config:
 
-Hard-fail unusually severe drift by default: `body_scale_cv > 0.20` or `normalized_anchor_y_std > 0.12`. Adjust thresholds only when the action design genuinely requires large silhouette or vertical changes, such as jump, squash-and-stretch, or death.
+- `grounded` (default): review bbox extent, bottom movement and horizontal drift.
+- `aerial`: allow intentional vertical/horizontal travel; retain extent review.
+- `deforming`: allow deliberate fall/squash/silhouette change; retain structural gates.
+
+Profiles never disable empty-frame, clipping, alpha residue, unused-slot, or hash checks. Extent and bottom movement are warnings, even when large: weapons, crouches and jumps can change them without changing body scale. Review torso/head proportions against the master separately. Profiles are declared action intent, not an automatic excuse for a bad animation.
+
+Legacy per-action crop fitting always requires review because it cannot guarantee preserved displacement or cross-action scale. Existing unsigned results must be reprocessed before receiving new approval.
 
 ## 2. Visual identity review
 
@@ -42,7 +50,7 @@ Reject identity drift even if all programmatic metrics pass.
 
 ## 3. Motion review
 
-Inspect the GIF at intended speed and step through individual frames.
+Inspect the GIF at intended speed and step through individual frames. GIF timing is quantized to 10ms; use exact durations in the atlas and target engine for timing acceptance. Record frame number, phase/contact, defect, and smallest repair for each issue. Compare the final-to-first transition with neighboring transitions; do not require identical endpoint pixels for a loop.
 
 - The action is recognizable at target game size.
 - Key poses differ meaningfully and follow a plausible temporal order.
@@ -75,6 +83,6 @@ Before approving the pilot, verify in the target engine:
 
 ## 6. Failure severity
 
-- **Fail:** wrong count, empty frame, clipping, edge touch, alpha residue, severe drift, wrong character, wrong facing, broken anatomy, wrong action, or unusable loop.
+- **Fail:** wrong count, empty frame, clipping, edge touch, alpha residue, visually confirmed unintended scale/position drift, wrong character, wrong facing, broken anatomy, wrong action, or unusable loop.
 - **Review:** moderate scale or anchor warning, deliberate large silhouette change, minor edge contamination, subtle loop mismatch, or uncertain action readability.
 - **Pass:** deterministic gates pass, visual identity and motion pass, and engine playback is verified.

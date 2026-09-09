@@ -80,7 +80,7 @@ The canonical master is the visual source of truth, not merely another reference
 
 1. Prefer an approved in-game frame or cleaned model sheet.
 2. If none exists, generate a neutral full-body master before any action.
-3. Remove its chroma background using the installed `$imagegen` helper.
+3. Preserve native alpha; for a deliberately generated matte, remove it with the installed `$imagegen` helper.
 4. Inspect the cutout on light, dark, and checker backgrounds.
 5. Record immutable traits in `character-spec.md`.
 6. Obtain explicit approval.
@@ -146,3 +146,58 @@ ${CODEX_HOME:-$HOME/.codex}/skills/.system/imagegen/scripts/remove_chroma_key.py
 ```
 
 Prefer an existing project environment or the Codex desktop bundled Python. If neither has Pillow, explain the missing dependency and ask before installing it.
+
+
+## 7. Fixed geometry and old runs
+
+New schema-2 runs default to `--placement fixed --background-mode transparent --candidates 1`. Source grids must divide exactly into equally sized square slots. The source root is normalized `(0.5, 0.82)`, or `(0.5, 0.5)` with `--anchor center`. The default output root follows the same fractions; set `--pivot 64,100` for a different output root. The scale is `min(target_width / slot_width, target_height / slot_height)`, independent of pose bounds. Mapping whole slots preserves deliberate root-relative motion, while the master/anchor reference establishes apparent body scale. Output dimensions need not be square.
+
+Freeze source view, anchor-sheet framing, target canvas and pivot before generation. A candidate with the wrong grid aspect or clipped content should be repaired/regenerated; do not squash the image to force square slots. Pixel-art output uses nearest-neighbor sampling, which does not turn antialiased source art into true pixel art.
+
+Existing schema-1 runs without a placement field retain `legacy-fit`. Explicit `--placement legacy-fit` is also available for new runs. It preserves old crop-and-center processing and cannot guarantee cross-action scale. Do not silently migrate already generated art. For fixed geometry, start a sibling run and reuse compatible raw sources only after inspecting their framing.
+
+Creation flags set new-run geometry; `--update` only adds actions or applies action configs. Changes to master, geometry, references, prompts, action timing, processed frames, QC or review media make dependent evidence stale. Old unsigned candidates need processing, QC, preview and visual selection again. `--force` rebuilds only the named candidate, removes its old QC/preview/frame outputs and clears its selection; a new candidate ID preserves the previously selected candidate.
+
+## 8. Action timing and motion contract
+
+Optional JSON config (frame indices are 1-based):
+
+```json
+{
+  "durations_ms": [120, 40, 60, 180],
+  "phases": ["anticipation", "contact", "follow-through", "recovery"],
+  "contacts": ["both feet", "left foot", "left foot", "both feet"],
+  "events": [{"frame": 2, "name": "hit"}],
+  "qc_profile": "grounded"
+}
+```
+
+All fields are optional. Durations, phases and contacts, when supplied, must have exactly one entry per frame. Durations are positive finite milliseconds; absent durations default to `1000 / fps`. Profiles are `grounded`, `aerial` or `deforming`. Contact labels are visual intent, not collision geometry.
+
+```bash
+python "$SKILL_DIR/scripts/prepare_sprite_run.py" \
+  --output-dir /absolute/path/to/sprite-run --update \
+  --action 'attack:4:10:once:2x2' \
+  --action-config 'attack=/absolute/path/to/attack.json'
+```
+
+Apply a config to an existing action by omitting `--action` and retaining `--update --action-config`. Supplied fields merge with the existing config and invalidate its selection. Reprocess, rerun QC and render before reviewing it again. Complete phase/contact planning before generating a complex action; a pose guide should reflect these beats.
+
+## 9. Validation and model comparisons
+
+Developer validation (Python with Pillow; no network or paid generation):
+
+```bash
+python -m unittest discover -s tests -v
+python -m compileall -q scripts
+```
+
+Procedural tests cover the actual prepare → process → QC → preview → select → generic/Godot export CLI flow, source clipping, airborne displacement, cross-action body scale, timing, mirroring and stale evidence rejection. They verify pipeline behavior, not model quality or actual engine playback.
+
+For a deliberate real-generation benchmark, keep the master, action beats, target canvas and engine constant across candidates. Include a run loop, weapon attack and jump/landing. Record available generation model/usage, elapsed time, failed frame numbers, repair count, use/redo decision and in-engine evidence. Keep raw art and benchmark outputs outside the Skill repository. Do not claim the model upgrade improved acceptance without this comparison.
+
+
+Use `process_action_sheet.py --prompt-file /path/to/issued-prompt.txt` to preserve the exact prompt sent to generation. Without this flag, `prompt-used.md` is a copy of the action template and `processing.json` labels it `action-template-unverified`; it must not be described as a verified tool transcript. Keep any available model ID, returned usage and elapsed time in a separate local generation log, without raw responses, signed URLs or credentials.
+
+
+Optional real-engine smoke test: set `SPRITE_TEST_GODOT` to an existing Godot 4 executable when running the suite. The test imports the exported resource in a temporary project, loads it in Godot, checks relative frame durations and applies the exported node offset. It does not replace visual gameplay acceptance. The installed imagegen chroma helper is also exercised when available; these two integrations report explicit skips when their dependencies are absent.
