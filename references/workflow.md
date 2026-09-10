@@ -116,14 +116,18 @@ Symptoms include baseline jumps, inconsistent cell padding, wrong source-grid or
 
 Repair by correcting action metadata or processing parameters and re-running deterministic steps. Never hide instability with per-frame fit-to-cell scaling.
 
+### Background-only failures
+
+Keep the successful action sheet as the edit target. Preserve the original source and issued prompt, repair only its background, and compare all frames for pose, identity and cadence changes before selecting the repair. A generative background edit may redraw the body. Reject motion degradation; a regenerated action must have a separate candidate ID and explicit source-change note, and pass motion review again. Never silently substitute it in the workbench or exports.
+
 ### Single-slot visual failures
 
 Use an identity-preserving image edit grounded by:
 
 - canonical master;
 - current action sheet;
-- anchor and layout guides;
-- pose guide;
+- positioning/layout guides only if needed for geometry, never for motion;
+- an existing pose guide when needed for the named defect;
 - a concise description of the one bad slot;
 - an invariant that every other slot must remain unchanged.
 
@@ -131,7 +135,7 @@ Re-run processing and QC for the entire edited action because an image edit can 
 
 ### Action-level failures
 
-Regenerate only the failing action. Include the canonical master, anchor sheet, pose guide, and the exact failure note. Do not regenerate passed actions.
+Regenerate only the failing action. Include the canonical master, a distinct action/pose reference, positioning guidance as needed, and the exact failure note. Do not regenerate passed actions.
 
 ### Master-level failures
 
@@ -181,7 +185,7 @@ python "$SKILL_DIR/scripts/prepare_sprite_run.py" \
   --action-config 'attack=/absolute/path/to/attack.json'
 ```
 
-Apply a config to an existing action by omitting `--action` and retaining `--update --action-config`. Supplied fields merge with the existing config and invalidate its selection. Reprocess, rerun QC and render before reviewing it again. Complete phase/contact planning before generating a complex action; a pose guide should reflect these beats.
+Apply a config to an existing action by omitting `--action` and retaining `--update --action-config`. Supplied fields merge with the existing config and invalidate its selection. Reprocess, rerun QC and render before reviewing it again. Complete phase/contact planning before generating a complex action; a pose guide should reflect these beats. `anchor-sheet.png` repeats neutral poses for positioning only and is not a motion reference. Use `--pose-guide action=/path/to/guide.png` at creation or with `--update` to attach a separate action reference; changing a guide invalidates selection and requires fresh processing/review; reattaching the same pixels preserves existing approval. Unknown targets, missing files, unreadable images and duplicate guide targets are rejected before run mutation. The stored reference is always PNG.
 
 ## 9. Validation and model comparisons
 
@@ -192,7 +196,7 @@ python -m unittest discover -s tests -v
 python -m compileall -q scripts
 ```
 
-Procedural tests cover the actual prepare → process → QC → preview → select → generic/Godot export CLI flow, source clipping, airborne displacement, cross-action body scale, timing, mirroring and stale evidence rejection. They verify pipeline behavior, not model quality or actual engine playback.
+Procedural tests also cover independent motion-reference creation/update, invalid-input preservation, unchanged-reference reuse and separation from positioning geometry. Procedural tests cover the actual prepare → process → QC → preview → select → generic/Godot export CLI flow, source clipping, airborne displacement, cross-action body scale, timing, mirroring and stale evidence rejection. They verify pipeline behavior, not model quality or actual engine playback.
 
 For a deliberate real-generation benchmark, keep the master, action beats, target canvas and engine constant across candidates. Include a run loop, weapon attack and jump/landing. Record available generation model/usage, elapsed time, failed frame numbers, repair count, use/redo decision and in-engine evidence. Keep raw art and benchmark outputs outside the Skill repository. Do not claim the model upgrade improved acceptance without this comparison.
 

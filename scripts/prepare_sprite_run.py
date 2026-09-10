@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import math
-import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -32,6 +31,8 @@ from _sprite_common import (
 )
 
 
+ANCHOR_EXTENT = 0.62  # Neutral master framing, not a per-pose fit target.
+
 KEY_CANDIDATES = ["#00FF00", "#FF00FF", "#00FFFF", "#FFFF00", "#3F00FF"]
 
 
@@ -47,6 +48,41 @@ def parse_mapping(values: list[str], flag_name: str) -> dict[str, Path]:
         action, path = raw.split("=", 1)
         output[slugify(action)] = Path(path).expanduser().resolve()
     return output
+
+
+def load_pose_guides(values: list[str], actions: list[dict[str, Any]]) -> dict[str, Path]:
+    guides = parse_mapping(values, "--pose-guide")
+    if len(guides) != len(values):
+        raise SystemExit("Duplicate --pose-guide action targets are not allowed.")
+    ids = {action["id"] for action in actions}
+    for name, path in guides.items():
+        if name not in ids:
+            raise SystemExit(f"Unknown pose guide target: {name}")
+        if not path.is_file():
+            raise SystemExit(f"Pose guide does not exist: {path}")
+        try:
+            with Image.open(path) as guide:
+                guide.verify()
+            with Image.open(path) as guide:
+                guide.load()
+        except (OSError, SyntaxError, ValueError) as exc:
+            raise SystemExit(f"Cannot read pose guide image: {path}: {exc}") from exc
+    return guides
+
+
+def attach_pose_guide(action_dir: Path, action: dict[str, Any], pose: Path) -> bool:
+    target = action_dir / "references" / "pose-guide.png"
+    if action.get("pose_guide") == "references/pose-guide.png" and target.is_file():
+        with Image.open(pose) as supplied, Image.open(target) as current:
+            if (supplied.size == current.size
+                    and supplied.convert("RGBA").tobytes() == current.convert("RGBA").tobytes()):
+                return False
+    if pose.resolve() != target.resolve():
+        # The installed reference is always an actual PNG, including JPEG input.
+        with Image.open(pose) as guide:
+            guide.convert("RGBA").save(target)
+    action["pose_guide"] = "references/pose-guide.png"
+    return True
 
 
 def sample_opaque_colors(image: Image.Image, limit: int = 2048) -> list[tuple[int, int, int]]:
@@ -151,7 +187,7 @@ def create_anchor_sheet(
     if bbox is None:
         raise SystemExit("The canonical master contains no visible pixels.")
     cropped = master.crop(bbox)
-    scale = min((slot_size * 0.62) / cropped.width, (slot_size * 0.62) / cropped.height)
+    scale = min((slot_size * ANCHOR_EXTENT) / cropped.width, (slot_size * ANCHOR_EXTENT) / cropped.height)
     width = max(1, int(round(cropped.width * scale)))
     height = max(1, int(round(cropped.height * scale)))
     resampling = Image.Resampling.NEAREST if pixel_art else Image.Resampling.LANCZOS
@@ -218,9 +254,9 @@ def action_prompt(run: dict[str, Any], action: dict[str, Any]) -> str:
     frame_count = action["frame_count"]
     loop_phrase = "a seamless loop" if action["loop"] else "a non-looping action with a stable final pose"
     pose_line = (
-        "Pose guide: references/pose-guide.png is the temporal-pose authority."
+        "Action reference: references/pose-guide.png controls temporal poses, limb alternation and contacts; the master controls identity."
         if action.get("pose_guide")
-        else "Action beats: specify anticipation, contact, follow-through and recovery before generation."
+        else "Action reference: none supplied. Plan per-frame motion before generation; for walk/run specify both half-cycles with stable left/right leg labels, support, passing and opposite contact. If text-only motion failed, supply a separate pose guide or successful action sheet."
     )
     frame_timing = durations_ms(action)
     timing = "\n".join(
@@ -234,10 +270,11 @@ Asset type: candidate production action sheet for a 2D game character
 Primary request: edit the supplied references into exactly {frame_count} temporal poses for {action['display_name']}; create {loop_phrase}
 Input images:
 - references/canonical-master.png — authoritative character identity
-- references/anchor-sheet.png — authoritative body scale and neutral root; keep contacts or deliberate displacement from the motion plan
+- references/anchor-sheet.png — optional positioning reference ONLY: body scale and neutral root. Repeated standing figures are NOT action poses; do not copy their limbs or cadence. Motion comes from the action reference/plan.
 - references/layout-guide.png — optional construction-only layout; omit if redundant and never reproduce its marks
 {pose_line}
 {timing}
+Neutral-master framing: uniformly fit the complete visible master, including props, inside {ANCHOR_EXTENT:g} x {ANCHOR_EXTENT:g} of one square slot. Keep this reference scale across actions; never fit each action pose to that box.
 Spatial contract: fixed square slots; root at normalized {source_pivot}; preserve deliberate motion relative to this root. Do not recenter each pose.
 Composition: exactly {columns}x{rows} slots in row-major temporal order; one complete isolated character in each of the first {frame_count} slots
 Style/medium: {run['character']['style_notes'] or 'preserve the canonical master exactly'}
@@ -265,12 +302,7 @@ def create_action_files(
     )
     pose = pose_guides.get(action["id"])
     if pose:
-        if not pose.is_file():
-            raise SystemExit(f"Pose guide does not exist: {pose}")
-        target_pose = references / "pose-guide.png"
-        if pose.resolve() != target_pose.resolve():
-            shutil.copy2(pose, target_pose)
-        action["pose_guide"] = "references/pose-guide.png"
+        attach_pose_guide(action_dir, action, pose)
     if master is not None:
         create_anchor_sheet(
             references / "anchor-sheet.png",
@@ -413,12 +445,12 @@ def create_new_run(args: argparse.Namespace, run_dir: Path) -> dict[str, Any]:
     for action in actions:
         action.update(configs.get(action["id"], {}))
         validate_action_config(action)
+    pose_guides = load_pose_guides(args.pose_guide, actions)
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "prompts").mkdir(exist_ok=True)
     (run_dir / "references").mkdir(exist_ok=True)
     write_text(run_dir / "character-spec.md", character_spec(args.character_name, args.view, args.style_notes))
     write_text(run_dir / "prompts" / "canonical-master.md", canonical_prompt(run))
-    pose_guides = parse_mapping(args.pose_guide, "--pose-guide")
     for action in actions:
         create_action_files(run_dir, run, action, pose_guides, master if args.approve_master else None)
     write_json(run_dir / "run.json", run)
@@ -450,7 +482,8 @@ def update_run(args: argparse.Namespace, run_dir: Path, run: dict[str, Any]) -> 
     master_file = run["character"].get("master_file")
     if master_file:
         master = Image.open(run_dir / master_file).convert("RGBA")
-    pose_guides = parse_mapping(args.pose_guide, "--pose-guide")
+    if args.pose_guide and not args.update:
+        raise SystemExit("Updating action references in an existing run requires --update.")
     if args.update:
         existing = {item["id"] for item in run["actions"]}
         additions = [parse_action_spec(raw) for raw in args.action]
@@ -460,9 +493,14 @@ def update_run(args: argparse.Namespace, run_dir: Path, run: dict[str, Any]) -> 
             existing.add(action["id"])
         current_actions = [read_json(run_dir / "actions" / a["id"] / "action.json") for a in run["actions"]]
         configs = load_action_configs(args.action_config, current_actions + additions)
+        pose_guides = load_pose_guides(args.pose_guide, current_actions + additions)
         for action in current_actions:
-            if action["id"] in configs:
-                action.update(configs[action["id"]])
+            pose_changed = False
+            if action["id"] in pose_guides:
+                pose_changed = attach_pose_guide(
+                    run_dir / "actions" / action["id"], action, pose_guides[action["id"]])
+            if action["id"] in configs or pose_changed:
+                action.update(configs.get(action["id"], {}))
                 invalidate_selection(run_dir, run, action)
                 write_text(run_dir / "actions" / action["id"] / "prompt.md", action_prompt(run, action))
         for action in additions:
@@ -487,11 +525,11 @@ def main() -> None:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--character-name")
     parser.add_argument("--action", action="append", default=[])
-    parser.add_argument("--pose-guide", action="append", default=[], help="action=/absolute/path")
+    parser.add_argument("--pose-guide", action="append", default=[], help="action=/path/to/image: motion reference only; create or update with --update.")
     parser.add_argument("--master", help="Approved transparent canonical master PNG.")
     parser.add_argument("--approve-master", action="store_true")
     parser.add_argument("--replace-master", action="store_true")
-    parser.add_argument("--update", action="store_true", help="Add new actions to an existing run.")
+    parser.add_argument("--update", action="store_true", help="Add actions or update their motion configs and pose guides.")
     parser.add_argument("--frame-width", type=int, default=128)
     parser.add_argument("--frame-height", type=int, default=128)
     parser.add_argument("--source-slot-size", type=int, default=256)

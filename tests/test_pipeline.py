@@ -162,6 +162,112 @@ class PipelineTest(unittest.TestCase):
         self.assertNotIn('selected_candidate', self.read(self.run / 'actions/run/action.json'))
         self.cli('qc_action.py', '--run-dir', self.run, '--action', 'run', '--candidate', 'one', ok=False)
 
+    def test_pose_reference_update_preserves_geometry_and_invalidates_only_target(self):
+        self.process(); self.review()
+        self.add_action('idle:4:10:loop:2x2')
+        self.process(action='idle'); self.review('idle')
+        action_dir = self.run / 'actions/run'
+        anchor = (action_dir / 'references/anchor-sheet.png').read_bytes()
+        layout = (action_dir / 'references/layout-guide.png').read_bytes()
+        source = (self.candidate() / 'source.png').read_bytes()
+        guide = self.sheet('motion-guide', jump=True)
+        config = self.base / 'motion.json'
+        self.write(config, {'durations_ms': [120, 40, 60, 180]})
+        self.cli('prepare_sprite_run.py', '--output-dir', self.run, '--update',
+                 '--pose-guide', f'run={guide}', '--action-config', f'run={config}')
+        action = self.read(action_dir / 'action.json')
+        summary = self.read(self.run / 'run.json')['actions'][0]
+        self.assertEqual(action, summary)
+        self.assertEqual(action['pose_guide'], 'references/pose-guide.png')
+        self.assertEqual(action['durations_ms'], [120, 40, 60, 180])
+        self.assertNotIn('selected_candidate', action)
+        self.assertNotIn('visual_review', action)
+        self.assertEqual(Image.open(action_dir / action['pose_guide']).tobytes(), Image.open(guide).tobytes())
+        self.assertEqual(anchor, (action_dir / 'references/anchor-sheet.png').read_bytes())
+        self.assertEqual(layout, (action_dir / 'references/layout-guide.png').read_bytes())
+        self.assertEqual(source, (self.candidate() / 'source.png').read_bytes())
+        self.cli('qc_action.py', '--run-dir', self.run, '--action', 'run', '--candidate', 'one', ok=False)
+        self.assertEqual(self.read(self.run / 'actions/idle/action.json')['selected_candidate'], 'one')
+        self.process(candidate='two'); self.review(candidate='two'); self.package()
+
+    def test_pose_guide_creation_and_replacement_remain_separate_from_anchor(self):
+        first = self.sheet('first-guide', jump=True)
+        other = self.base / 'guided'
+        self.cli('prepare_sprite_run.py', '--output-dir', other, '--character-name', 'Guided',
+                 '--master', self.master, '--approve-master', '--action', 'walk:4:10:loop:2x2',
+                 '--pose-guide', f'walk={first}')
+        action_dir = other / 'actions/walk'
+        reference = action_dir / 'references/pose-guide.png'
+        self.assertEqual(Image.open(reference).tobytes(), Image.open(first).tobytes())
+        self.assertNotEqual(reference.read_bytes(), (action_dir / 'references/anchor-sheet.png').read_bytes())
+        second = self.sheet('second-guide', sword=True)
+        self.cli('prepare_sprite_run.py', '--output-dir', other, '--update', '--pose-guide', f'walk={second}')
+        self.assertEqual(Image.open(reference).tobytes(), Image.open(second).tobytes())
+        self.cli('prepare_sprite_run.py', '--output-dir', other, '--update', '--pose-guide', f'walk={reference}')
+        self.assertEqual(Image.open(reference).tobytes(), Image.open(second).tobytes())
+        # A later master replacement must retain the updated motion reference.
+        self.cli('prepare_sprite_run.py', '--output-dir', other, '--master', self.master,
+                 '--approve-master', '--replace-master')
+        self.assertEqual(Image.open(reference).tobytes(), Image.open(second).tobytes())
+        self.assertEqual(self.read(other / 'run.json')['actions'][0]['pose_guide'], 'references/pose-guide.png')
+
+    def test_invalid_pose_guides_do_not_mutate_approved_run(self):
+        self.process(); self.review()
+        valid = self.sheet('valid-guide')
+        broken = self.base / 'broken.png'; broken.write_bytes(b'not an image')
+        before = {p.relative_to(self.run): p.read_bytes() for p in self.run.rglob('*') if p.is_file()}
+        cases = [
+            [f'unknown={valid}'], [f'run={self.base / "missing.png"}'], [f'run={broken}'],
+            [f'run={valid}', f'run={valid}'], [f'run={valid}', f'idle={broken}'],
+        ]
+        for mappings in cases:
+            with self.subTest(mappings=mappings):
+                flags = [part for mapping in mappings for part in ('--pose-guide', mapping)]
+                self.cli('prepare_sprite_run.py', '--output-dir', self.run, '--update',
+                         '--action', 'idle:4:10:loop:2x2', *flags, ok=False)
+                after = {p.relative_to(self.run): p.read_bytes() for p in self.run.rglob('*') if p.is_file()}
+                self.assertEqual(before, after)
+        self.package()
+
+    def test_invalid_pose_guide_creation_leaves_no_run(self):
+        for mapping in [f'unknown={self.master}', f'run={self.base / "missing.png"}']:
+            other = self.base / 'invalid-run'
+            self.cli('prepare_sprite_run.py', '--output-dir', other, '--character-name', 'Invalid',
+                     '--action', 'run:4:10:loop:2x2', '--pose-guide', mapping, ok=False)
+            self.assertFalse(other.exists())
+
+    def test_jpeg_motion_reference_is_stored_as_png(self):
+        guide = self.base / 'motion.jpg'
+        Image.open(self.sheet(jump=True)).convert('RGB').save(guide)
+        self.cli('prepare_sprite_run.py', '--output-dir', self.run, '--update', '--pose-guide', f'run={guide}')
+        with Image.open(self.run / 'actions/run/references/pose-guide.png') as stored:
+            self.assertEqual(stored.format, 'PNG')
+            self.assertEqual(stored.convert('RGB').tobytes(), Image.open(guide).tobytes())
+
+    def test_same_pose_guide_keeps_approval_and_prompt(self):
+        guide = self.sheet('guide', jump=True)
+        self.cli('prepare_sprite_run.py', '--output-dir', self.run, '--update', '--pose-guide', f'run={guide}')
+        self.process(); self.review()
+        action_dir = self.run / 'actions/run'
+        before = (action_dir / 'action.json').read_bytes()
+        prompt = (action_dir / 'prompt.md').read_bytes()
+        for path in (guide, action_dir / 'references/pose-guide.png'):
+            self.cli('prepare_sprite_run.py', '--output-dir', self.run, '--update', '--pose-guide', f'run={path}')
+            self.assertEqual(before, (action_dir / 'action.json').read_bytes())
+            self.assertEqual(prompt, (action_dir / 'prompt.md').read_bytes())
+            self.package()
+
+    def test_pose_update_without_master_remains_blocked(self):
+        other = self.base / 'no-master'
+        self.cli('prepare_sprite_run.py', '--output-dir', other, '--character-name', 'Waiting',
+                 '--action', 'walk:4:10:loop:2x2')
+        self.cli('prepare_sprite_run.py', '--output-dir', other, '--update',
+                 '--pose-guide', f'walk={self.sheet(jump=True)}')
+        run = self.read(other / 'run.json')
+        self.assertEqual(run['status'], 'needs-master')
+        self.assertEqual(run['actions'][0]['status'], 'blocked-on-master')
+        self.assertEqual(self.read(other / 'actions/walk/action.json')['status'], 'blocked-on-master')
+
     def test_source_clipping_is_not_hidden_by_normalization(self):
         self.process(self.sheet(clipped=True))
         self.cli('qc_action.py', '--run-dir', self.run, '--action', 'run', '--candidate', 'one', ok=False)

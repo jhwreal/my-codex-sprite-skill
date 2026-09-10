@@ -14,13 +14,13 @@
 Label every image when invoking `$imagegen`:
 
 - **Canonical master** — authoritative identity, costume, palette, proportions, facing, and props.
-- **Anchor sheet** — authoritative slot count, body scale, and neutral root; preserve declared contacts and intentional displacement.
+- **Anchor sheet / positioning reference（定位参考）** — slot count, body scale, and neutral root only. Its repeated neutral figures are measurement examples, not temporal poses; do not copy their limbs or cadence. Optional attachment when needed for geometry; keep numeric geometry in the prompt even when omitted.
 - **Layout guide** — construction-only grid and safe margins; never reproduce its lines, labels, colors, or background marks.
-- **Pose guide** — authoritative temporal pose sequence; preserve character identity from the master rather than copying the guide's appearance.
+- **Pose guide / action reference（动作参考）** — authoritative temporal pose sequence, support legs, passing poses and weight transfer; preserve character identity from the master rather than copying the guide's appearance.
 - **Current action sheet** — edit target during a repair; change only the named slot or defect.
 - **Style reference** — style only; never replace the master character with its subject.
 
-Do not attach redundant or contradictory references. Identity and pose references must have distinct roles.
+Do not attach redundant or contradictory references. Identity, positioning and action references must have distinct roles. A successful earlier action can supply motion even when its background is defective; identify the intended frame mapping and any unverified beats. The master controls identity, the action reference controls motion, and positioning controls scale/root without freezing deliberate displacement. Never treat repeated standing figures as a pose guide. Prefer a compact textual phase/contact plan for a first attempt when motion is simple; reuse an existing guide before generating a new one. A guide with a different frame count/facing requires an explicit phase mapping, not blind copying. For background-only repair, the current sheet is the pose authority; avoid redundant references that invite redesign.
 
 ## 2. Identity contract
 
@@ -53,7 +53,7 @@ Prefer fewer meaningful frames over many weakly differentiated frames. Determini
 
 ## 4. Prompt construction
 
-The generated `actions/<action>/prompt.md` is the authoritative starting point. Add action-specific beats without redesigning the character.
+The generated `actions/<action>/prompt.md` is the starting template. Resolve unspecified beats and keep only references actually attached in the issued prompt; save that prompt using `--prompt-file`. The master lives at run-level `references/canonical-master.png`; action guides live under `actions/<action>/references/`. Add action-specific beats without redesigning the character.
 
 Use this concise structure:
 
@@ -61,12 +61,12 @@ Use this concise structure:
 Use case: identity-preserve
 Asset type: candidate production action sheet for a 2D game character
 Primary request: edit the references into exactly <N> temporal poses for <action>
-Input images: canonical master; anchor sheet; layout guide; optional pose guide
+Input images: canonical master (identity); action/pose reference (motion, if available); optional anchor sheet (positioning only); optional layout guide
 Composition: <columns>x<rows> row-major grid; one complete isolated character per used slot
 Action beats: <frame-by-frame timing or named animation phases>
 Constraints: preserve identity contract; shared body scale, declared contact points and intentional airborne motion; complete unclipped body
 Background: genuine transparent alpha; no painted checkerboard, shadows, or floor
-Spatial contract: fixed square slots; root and body scale from anchor sheet; preserve intended source-relative displacement
+Spatial contract: fixed square slots; declared root and body scale (optional anchor sheet illustrates positioning only); preserve intended source-relative displacement
 Avoid: text, labels, visible guide marks, scenery, duplicate characters, detached effects,
 motion blur, afterimages, contact shadows, cropped limbs, overlapping slots, extra props
 ```
@@ -76,7 +76,7 @@ For pixel art, also require crisp clusters, fixed apparent pixel scale, a restra
 ## 5. Candidate strategy
 
 - Start with one candidate. Add a second after a specific failure diagnosis or when the user requests a comparison.
-- Default retry budget: two generation attempts per action; report persistent defects before extending it. Do not automatically double every image request.
+- Default retry ceiling: two generation attempts per action, also bounded by the 30–60 minute whole-batch budget in SKILL.md; count background repairs and extra guide generation in elapsed time. Report persistent defects before extending it. Do not automatically double every image request.
 - Never ask one image call to produce several distinct candidate sheets.
 - Make one targeted correction per iteration. Preserve all verified invariants.
 - Keep prompt, input roles, selected source, processing report, QC, and preview together under the candidate directory.
@@ -89,15 +89,15 @@ Remove detached effects and oversized weapon trails. Keep body and effects on se
 
 ### Identity drifts across slots
 
-Strengthen the canonical-master role, use a repeated-character anchor sheet, reduce frame count, simplify the action, or provide a pose guide. Do not generate frames independently.
+Strengthen the canonical-master role while preserving the action reference. Use an anchor sheet only for a diagnosed scale/root problem, explicitly excluding its neutral poses from motion authority. Do not generate frames independently.
 
 ### Animation is static
 
-Specify distinct temporal beats, weight transfer, contact poses, anticipation, and recovery. Reject a sheet made of near-duplicate poses even if frame count is correct.
+Specify distinct temporal beats, weight transfer, contact poses, anticipation, and recovery. Reject a sheet made of near-duplicate poses even if frame count is correct. For walk/run, label anatomical left/right legs consistently across both half-cycles; require opposite support/contact and passing, not simply two similar rear-foot lifts. After text-only motion failure, reuse a better action sheet or supply a separate pose guide before retrying.
 
 ### Grid lines appear in output
 
-Restate that the guide is construction-only, attach the clean anchor sheet, and forbid visible borders, labels, guide colors, and frame numbers.
+Remove a redundant guide or restate that it is construction-only. Keep numeric scale/root constraints and forbid visible borders, labels, guide colors, and frame numbers.
 
 ### Chroma edge is dirty
 
@@ -106,7 +106,7 @@ Choose a key farther from the character palette, forbid shadows and translucent 
 
 ## Model and reference guidance
 
-- Built-in imagegen: use the actual exposed tool fields. Inspect local inputs before editing. Attach the master and clean anchor sheet; add a pose guide when needed. Do not send redundant copies or assume the tool exposes API-only options such as `quality`, `size`, or `input_fidelity`.
+- Built-in imagegen: use the actual exposed tool fields. Inspect local inputs before editing. Attach the master for identity and a distinct action reference when needed; attach the clean anchor sheet only for positioning ambiguity. Do not send redundant copies or assume the tool exposes API-only options such as `quality`, `size`, or `input_fidelity`.
 - Preserve the current edit target for repairs. Change one named slot/defect, then inspect all resulting frames because neighboring pixels may change.
 - For an explicitly chosen Image 2 CLI/API path, `gpt-image-2` processes reference images at high fidelity automatically; omit `input_fidelity`. Use the installed imagegen skill for supported sizes, quality and background constraints. Do not substitute Image 2.5 capabilities or change models silently.
 - Choose a total canvas whose dimensions divide into equal square slots. Increase source resolution for tiny face/costume details before increasing frame count. Express desired dimensions in the built-in prompt and validate the actual file; a requested layout is not a guarantee.

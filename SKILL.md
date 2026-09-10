@@ -16,11 +16,17 @@ Do not promise that an AI-generated sheet is shippable merely because it was spl
 1. Load and follow the installed `$imagegen` skill before any visual generation or edit. Use its built-in-first path and current tool schema. Do not call an image API or ad-hoc image CLI directly.
 2. Establish one approved transparent canonical master before generating actions. Treat its silhouette, face, proportions, palette, outfit, materials, handedness, markings, and props as invariants.
 3. Generate one complete action sheet per image request. Do not generate isolated frames unless repairing one bad frame after the action sheet has otherwise passed.
-4. Attach the canonical master and matching anchor sheet to each action request. Add a pose guide when temporal beats or anatomy need it; include a layout guide only when it resolves layout ambiguity.
+4. Attach the canonical master for identity. Treat the anchor sheet as positioning reference only, never as an action sequence; attach it only when spatial ambiguity needs it. When a motion image is needed, use a separate action/pose reference, preferably an existing successful action or a phase guide; do not generate an extra guide by default. Include a layout guide only when it resolves layout ambiguity.
 5. Keep character-body animation separate from sword arcs, projectiles, dust, smoke, hit flashes, and other effects unless the effect is physically attached and intentionally part of the silhouette.
 6. Let scripts own exact grid slicing, transparency cleanup, shared scaling, anchors, atlas geometry, metadata, and previews. Never rely on generated pixels for exact engine geometry.
 7. Start with one pilot action for a new hero. Do not expand the full action set until the pilot passes identity, motion, loop, transparency, and in-engine checks.
 8. Repair the smallest failing scope: processing settings, then one frame, then one action, and only then the canonical master or full set.
+
+## Batch time budget
+
+Aim to finish the agreed action batch in 30–60 minutes, including generation, background repairs, processing and review. This is a planning target, not a provider-latency guarantee. Reuse approved masters and successful motion; do not add a pose-guide image call, candidate comparison or model benchmark by default. Begin with the user's action list and priorities; use 60 minutes when no tighter target is given. Check elapsed time after each external generation call and use observed latency to decide whether another call fits, reserving roughly 10 minutes for processing, review and handoff.
+
+Use one candidate per action first. The two-attempt per-action cap is a ceiling, not an allocation: the whole-batch time budget takes precedence, and background/guide calls count too. After the pilot passes, move through the requested actions without repeated approvals or redundant checks. Inspect identity and motion together in one review pass, recording compact frame findings. Do not reduce required action quality or silently drop requested actions to meet the clock. If the remaining work cannot fit, stop optional generation/retries, deliver the approved subset with unresolved items and an estimate, and ask only when scope or additional time actually needs a user decision. Do not continue for hours by repeatedly resetting the budget per action.
 
 ## Runtime and project setup
 
@@ -91,11 +97,11 @@ Update `character-spec.md` with the actual identity invariants. If the master ch
 
 ### 4. Generate action candidates with `$imagegen`
 
-Read `actions/<action>/prompt.md`. Inspect local references before editing and attach them using the actual tool schema. Label identity, spatial, and pose references separately. Use `--action-config` to record per-frame phases, contacts, timing, and events when they matter; see `references/workflow.md`.
+Read `actions/<action>/prompt.md`. Inspect local references before editing and attach them using the actual tool schema. Label identity, positioning, and action references separately. Repeated neutral poses in anchor-sheet.png specify scale/root only; never copy their limb poses or cadence. For walk/run, plan both half-cycles with stable left/right leg labels and explicit support, passing and opposite contact; use a motion reference when text alone has failed. Use `--action-config` to record per-frame phases, contacts, timing, and events when they matter; see `references/workflow.md`.
 
-Start with one candidate per action and inspect it. Generate a second only for a diagnosed failure or a requested comparison. Default to at most two generation attempts per action; after repeated failure, report the concrete defect and revise the action plan before spending more. A requested candidate comparison or retry budget takes precedence. Save source images and the actual issued prompt in the run.
+Start with one candidate per action and inspect it. Generate a second only for a diagnosed failure or a requested comparison. Default to at most two generation attempts per action; after repeated failure, report the concrete defect and revise the action plan before spending more. A requested candidate comparison or retry budget takes precedence. Save source images and the actual issued prompt in the run. Inspect raw motion before spending time on background edits or full processing: for walk/run, quickly confirm both half-cycles and the loop seam. A failed motion candidate may be kept for diagnosis, but must not become the selected/exported action.
 
-New runs request true transparency. Validate the actual alpha channel; a painted checkerboard is not transparency. `--remove-chroma` is an explicit processing fallback for a deliberately generated flat matte. Ordinary opaque or partially transparent backgrounds must be repaired or regenerated, not silently keyed.
+New runs request true transparency. Validate the actual alpha channel; a painted checkerboard is not transparency. `--remove-chroma` is an explicit processing fallback for a deliberately generated flat matte. Ordinary opaque or partially transparent backgrounds must be repaired, not silently keyed. If motion is already good, edit that exact sheet for background only and compare every pose before accepting the repair; regeneration is a separate candidate, never a silent source replacement.
 
 ### 5. Process one candidate deterministically
 
@@ -107,7 +113,7 @@ python "$SKILL_DIR/scripts/process_action_sheet.py" \
   --candidate candidate-01
 ```
 
-New runs use `fixed` placement: equally sized square source slots map through one uniform scale and root translation to the target canvas. No per-pose bounding-box crop or recentering occurs. The same normalized source canvas maps to the same character scale across actions. Generation must still respect the anchor-sheet body scale. Source clipping and content in unused slots are checked before normalization.
+New runs use `fixed` placement: equally sized square source slots map through one uniform scale and root translation to the target canvas. No per-pose bounding-box crop or recentering occurs. The same normalized source canvas maps to the same character scale across actions. Generation must still respect the declared neutral-master scale, whether or not the optional positioning image is attached. Source clipping and content in unused slots are checked before normalization.
 
 The output root defaults to `(width × 0.5, height × 0.82)` for grounded sprites; `--pivot x,y` sets a custom root when creating a run. `--anchor center` uses a centered source and output root. Freeze geometry before generating actions. See `references/workflow.md` for legacy runs and exact timing.
 
@@ -129,7 +135,7 @@ python "$SKILL_DIR/scripts/render_action_preview.py" \
   --candidate candidate-01
 ```
 
-Inspect `qc.json`, `qa/contact-sheet.png`, and `qa/preview.gif`. A script result cannot judge identity, anatomy, weight, appeal, or action semantics. Review every frame against the master; report frame number, observed defect, and smallest repair. Inspect loop seams and playback at target size. Apply `references/qa-rubric.md`; bounding-box changes are review heuristics, not proof that the character changed scale.
+Inspect `qc.json`, `qa/contact-sheet.png`, and `qa/preview.gif`. A script pass means the implemented structural/heuristic checks passed, not that motion is correct. It cannot judge identity, anatomy, weight, appeal, or action semantics. Walk/run review must track each leg through both half-cycles and the loop seam; crossing silhouettes or bobbing alone do not prove alternation. Review every frame against the master; report frame number, observed defect, and smallest repair. Inspect loop seams and playback at target size. Apply `references/qa-rubric.md`; bounding-box changes are review heuristics, not proof that the character changed scale.
 
 ### 7. Select only a visually approved candidate
 
@@ -195,7 +201,7 @@ Inspect the final atlas, manifest, and in-engine playback before declaring compl
 
 - Raw sheet is sound but the preview pops: fix layout metadata, shared anchor, or processing; do not regenerate first.
 - One generated slot is wrong: repair that slot with a grounded edit, then re-run processing and QC for the whole action.
-- One action has identity or action-design failure: regenerate only that action with the canonical master, anchor sheet, pose guide, and failure note.
+- One action has identity or action-design failure: regenerate only that action with the canonical master, a distinct motion reference when needed, positioning guidance as needed, and failure note.
 - Many actions drift in the same way: repair or replace the canonical master/spec, then invalidate dependent actions.
 - Character is stable but attacks need large effects: keep the body action and create a separately anchored effects animation.
 - GIF is correct but the game is wrong: inspect frame order, FPS, pivot, atlas regions, texture filtering, loop flags, and import settings.

@@ -376,7 +376,7 @@ def verify_approval(candidate_dir: Path, run_dir: Path, run: dict[str, Any], act
 def invalidate_selection(run_dir: Path, run: dict[str, Any], action: dict[str, Any]) -> None:
     action.pop("selected_candidate", None)
     action.pop("visual_review", None)
-    action["status"] = "ready"
+    action["status"] = "ready" if run["character"].get("master_approved") else "blocked-on-master"
     write_json(run_dir / "actions" / action["id"] / "action.json", action)
     for index, summary in enumerate(run["actions"]):
         if summary["id"] == action["id"]:

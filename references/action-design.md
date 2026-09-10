@@ -18,9 +18,11 @@ Keep the silhouette quiet. Do not let idle read as walking, waving, attacking, o
 - passing;
 - up;
 - opposite contact;
-- repeat the mirrored leg cycle.
+- repeat with the opposite leg leading (not a horizontal image flip).
 
-Keep hips and shoulders coherent. The planted foot should not slide unless the game style intentionally exaggerates it.
+Plan both half-cycles explicitly. For a six-frame stylized walk, one possible mapping is left contact → left support/right passing → right advance → right contact → right support/left passing → left advance. Adapt compression and timing; this is not a required frame count. Left/right mean anatomical legs, not screen positions. Verify actual support exchange rather than merely crossing silhouettes.
+
+Keep hips and shoulders coherent. Judge planted-foot sliding in the intended playback mode: an in-place cycle moves the support foot backward relative to the sprite root to cancel engine travel, while world-space contact should remain planted. Do not freeze each foot to one source pixel.
 
 ## Run
 
@@ -31,7 +33,7 @@ Keep hips and shoulders coherent. The planted foot should not slide unless the g
 - airborne or extended stride;
 - opposite contact and recovery.
 
-Require clear alternation, forward lean, and weight transfer. Avoid a walk cycle merely played faster.
+For a biped, track both anatomical legs through both half-cycles, including support exchange and any flight phase. Adapt limb tracking for other anatomies or an explicitly requested shuffle/hop instead of imposing a biped walk. Require clear alternation, forward lean, and weight transfer. Avoid a walk cycle merely played faster.
 
 ## Light attack
 

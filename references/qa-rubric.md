@@ -11,7 +11,7 @@
 
 ## 1. Programmatic gates
 
-The scripts report deterministic facts and heuristics. Treat hard errors as blockers. Treat warnings as mandatory review items, not automatic failures or passes.
+A `qc.json` status of `pass` covers implemented structural checks and pixel heuristics only. It does not identify left/right legs, ground contacts or a correct gait; vertical bobbing can pass. The scripts report deterministic facts and heuristics. Treat hard errors as blockers. Treat warnings as mandatory review items, not automatic failures or passes.
 
 | Metric | Default target | Meaning |
 |---|---:|---|
@@ -59,6 +59,8 @@ Inspect the GIF at intended speed and step through individual frames. GIF timing
 - The first and last frame join naturally for loops.
 - Non-looping actions end in a stable state or transition cleanly.
 - There is no unintended size pop, baseline jump, frame-order reversal, foot slide, or frozen interval.
+
+For biped walk/run, use one compact per-frame review table (adapt for other anatomies or intentionally non-alternating gaits): frame, anatomical left-leg state, right-leg state, support/contact, passing or crossing, and next transition. Track the same limbs through both half-cycles and the last-to-first seam. Confirm support and front/back roles exchange; crossing silhouettes alone are insufficient. If occlusion makes limb identity uncertain, mark it unresolved and obtain clearer motion evidence. Reject repeated rear-foot lifts or standing bobbing masquerading as walking even when QC passes. Record this review in the selection note; no second report or extra image generation is required when the observed motion is clear. The script records the reviewer’s assertion, not an automatic gait proof.
 
 ## 4. Transparency and scale review
 

@@ -154,6 +154,7 @@ def main() -> None:
     }
     write_json(candidate_dir / "qc.json", result)
     print(f"status={status}")
+    print("scope=structural checks and pixel heuristics; identity, gait and contacts require visual review")
     print(f"qc={candidate_dir / 'qc.json'}")
     print(f"body_scale_cv={body_scale_cv:.6f}")
     print(f"normalized_anchor_y_std={anchor_y_std:.6f}")

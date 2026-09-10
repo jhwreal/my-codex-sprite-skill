@@ -196,7 +196,7 @@ def main() -> None:
         chroma_removed = False
     else:
         if run.get("background_mode", "chroma") != "chroma" and not args.remove_chroma:
-            raise SystemExit("Expected real alpha. Regenerate transparently, or use --remove-chroma only for a deliberate flat matte.")
+            raise SystemExit("Expected real alpha. Repair the background of this exact sheet while preserving its motion; use --remove-chroma only for a deliberate flat matte.")
         remove_chroma(source_copy, transparent_path, run["chroma_key"])
         transparent = clear_transparent_rgb(Image.open(transparent_path).convert("RGBA"))
         transparent.save(transparent_path)
